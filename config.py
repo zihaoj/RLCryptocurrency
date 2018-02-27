@@ -24,16 +24,17 @@ class config():
 
     
     # model and training config
-    num_batches = 200 # number of batches trained on 
-    batch_size = 1440 # number of steps used to compute each policy update
-    max_ep_len = 1440 # maximum episode length 1440 minutes = 1day
+    use_only_price_info = True
+    num_batches = 20 # number of batches trained on 
+    batch_size = 10 # number of steps used to compute each policy update
+    max_ep_len = 10 # maximum episode length 1440 minutes = 1day
     learning_rate = 3e-2
     gamma              = 1.0 # the discount factor
     use_baseline = True
     normalize_advantage=True
     # parameters for the policy and baseline models
     n_layers = 1
-    layer_size = 16
+    layer_size = 10
     activation=staticmethod(tf.nn.relu)
 
     # since we start new episodes for each batch

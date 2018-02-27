@@ -28,7 +28,8 @@ def build_mlp(
   Use tf.nn.relu nonlinearity between layers. 
   Args:
           mlp_input: the input to the multi-layer perceptron
-          output_size: the output layer size
+          output_size: the output size for action
+
           scope: the scope of the neural network
           n_layers: the number of layers of the network
           size: the size of each layer:
@@ -62,11 +63,22 @@ def build_mlp(
 
       dense.append(thisdense)
 
-    output = tf.contrib.layers.fully_connected(inputs = dense[-1], num_outputs = output_size, activation_fn = output_activation, scope = "output")
+    output = tf.contrib.layers.fully_connected(inputs = dense[-1], num_outputs = output_size, activation_fn = None, scope = "output", weights_initializer = tf.zeros_initializer(), biases_initializer = tf.zeros_initializer() )
   
     return output
-  #######################################################
-  #########          END YOUR CODE.          ############
+
+
+def RepackActionForEnv(env, action):
+
+  purchase = action[0:env._n_exchange*env._n_currency]
+  transfer = action[env._n_exchange*env._n_currency:]
+
+  purchase = np.reshape( purchase, (env._n_exchange, env._n_currency )  )
+  transfer = np.reshape( transfer, (env._n_exchange, env._n_exchange, env._n_currency )  )
+
+  output = (purchase, transfer)
+  return output
+
 
 
 class PG(object):
@@ -101,23 +113,35 @@ class PG(object):
     # discrete action space or continuous action space
     self.discrete = isinstance(env.action_space, gym.spaces.Discrete)
 
-    obs_dim = 0
-    for box in self.env.observation_space.spaces:
-      box_dim = 1
-      for dim in box.shape:
-        box_dim *= dim
-      obs_dim += box_dim
-    self.observation_dim = obs_dim
-    print "observable dim", obs_dim
+    # get observation dimension
+    self.observation_dim =0
+    self.observation_dim += env._n_exchange *(env._n_currency+1)  ## portfolio
 
-    action_dim = 0
-    for box in self.env.action_space.spaces:
-      box_dim = 1
-      for dim in box.shape:
-        box_dim *= dim
-      action_dim += box_dim
-    self.action_dim = action_dim
-    print "action dim", action_dim
+    if config.use_only_price_info:
+      self.observation_dim += env._n_exchange * env._n_currency
+    else:
+      self.observation_dim += env._n_exchange * env._n_currency * len(env.market_obs_attributes)
+
+
+    print "obs dim", self.observation_dim
+
+    # get action dimension
+    # due to constraints for purchase action we need only n_exchange-1
+    # due to constraints for transfer action we need only n_exchange**2*n_currency
+
+    self.action_dim = 0
+    self.action_purchase_dim = 0
+    self.action_transfer_dim = 0
+    ## first box is purchase
+    ## second box is transfer
+
+    self.action_purchase_dim = (env._n_exchange-1)
+    self.action_transfer_dim = (env._n_exchange-1)*env._n_exchange*env._n_currency/2
+    
+    self.action_dim += self.action_purchase_dim
+    self.action_dim += self.action_transfer_dim
+
+    print "action dim", self.action_dim
 
     self.lr = self.config.learning_rate
 
@@ -194,22 +218,17 @@ class PG(object):
     #######################################################
     #########   YOUR CODE HERE - 5-10 lines.   ############
     
-    if self.discrete:
-      self.action_logits      =   build_mlp(mlp_input=self.observation_placeholder,  output_size = self.action_dim, scope=scope,
-                                             n_layers=self.config.n_layers, size=self.config.layer_size, output_activation=None)
+    action_means =          build_mlp(mlp_input=self.observation_placeholder,
+                                      output_size = self.action_dim,
+                                      scope=scope,
+                                      n_layers=self.config.n_layers, size=self.config.layer_size, output_activation=None)
+    
+    log_std =               tf.get_variable("logsigma", shape=[self.action_dim], dtype = tf.float32, initializer=tf.initializers.constant([-2,-4]) )
 
-      self.sampled_action =   tf.squeeze(tf.multinomial( self.action_logits, 1 ), axis=1)
-      self.logprob        =   -tf.nn.sparse_softmax_cross_entropy_with_logits( labels=self.action_placeholder, logits = self.action_logits  )
-
-    else:
-      action_means =          build_mlp(mlp_input=self.observation_placeholder,  output_size = self.action_dim, scope=scope,
-                                        n_layers=self.config.n_layers, size=self.config.layer_size, output_activation=None)
-      
-      log_std =               tf.get_variable("logsigma", shape=[self.action_dim], dtype = tf.float32)
-      self.sampled_action =   tf.random_normal( shape=[self.action_dim], mean=action_means, stddev=tf.exp(log_std) )
-
-      mvn = tf.contrib.distributions.MultivariateNormalDiag(action_means, tf.exp(log_std) )
-      self.logprob        =   mvn.log_prob(self.action_placeholder)
+    self.sampled_action =   tf.random_normal( shape=[self.action_dim], mean=action_means, stddev=tf.exp(log_std) )
+  
+    mvn = tf.contrib.distributions.MultivariateNormalDiag(action_means, tf.exp(log_std) )
+    self.logprob        =   mvn.log_prob(self.action_placeholder)
     #######################################################
     #########          END YOUR CODE.          ############
             
@@ -423,33 +442,84 @@ class PG(object):
     t = 0
 
     start_date = date(2017, 1, 1)
-    init_portfolio = np.array([ [10000, 1],
-                                [10000, 1], ],
-                              dtype=np.float64)
+    print "start_date", start_date
 
     while (num_episodes or t < self.config.batch_size):
+      print "in while loop"
 
       thisdate = (start_date + timedelta(t)).strftime("%Y-%m-%d")
 
-      state = env.init( init_portfolio, thisdate)
+      init_portfolio = np.array([ [10000, 1],
+                                  [10000, 1], ],
+                                dtype=np.float64)
+
+      state, _, _, _ = env.init( init_portfolio, thisdate)
       states, actions, rewards = [], [], []
       episode_reward = 0
-  
+
+
       for step in range(self.config.max_ep_len):
 
-        ### flatten the numpy array
+        ### flatten the state array
         state_flatten = np.array([])
-        for subarray in state:
-          state_flatten.concatenate( (state_flatten, subarray.flatten()) )
+
+        for isubarray in range(2):
+          if config.use_only_price_info:
+            if isubarray ==0:
+              state_flatten = np.concatenate( (state_flatten, state[isubarray].flatten()) )
+            else:
+              state_flatten = np.concatenate( (state_flatten, state[isubarray][:,:,-1].flatten()) )
+          else:
+            state_flatten = np.concatenate( (state_flatten, state[isubarray].flatten()) )
 
         states.append(state_flatten)
 
-        print "states", states
-        print "state", states[-1]
-        print states[-1][None]
+        action_accept = False
+        n_failed_sampling = 0
+        while not action_accept:
+          action  = self.sess.run(self.sampled_action, feed_dict={self.observation_placeholder : states[-1][None]})[0]
 
-        action  = self.sess.run(self.sampled_action, feed_dict={self.observation_placeholder : states[-1][None]})[0]
-        state, reward, done, info = env.step(action)
+          ## purchase action has last element constrained to balance other exchange activities
+          purchase_action = action[0: self.action_purchase_dim]
+          if ( np.sum(purchase_action)>0 ):
+            purchase_action = np.append( purchase_action, -np.sum(purchase_action))#*(1-env._fee_transfer)) to confirm 
+          else:
+            purchase_action = np.append( purchase_action, -np.sum(purchase_action))#/(1-env._fee_transfer))
+          
+          transfer_flat = action[ self.action_purchase_dim:]
+          transfer_action = np.zeros( (env._n_exchange, env._n_exchange, env._n_currency) )
+          itransfer = -1
+
+          for iccur  in range(env._n_currency ):
+            for iex in range( env._n_exchange ):
+              for jex in range( iex, env._n_exchange ):
+                # transfer matrix diagonal always 0
+                if iex == jex:
+                  continue
+                else:
+                  itransfer +=1
+                  transfer_action[ iex, jex,  iccur] = transfer_flat[itransfer]
+                  transfer_action[ jex, iex,  iccur] = -transfer_flat[itransfer]
+
+          action_topack = np.concatenate( (purchase_action, transfer_action.flatten())  )
+          action_repacked = RepackActionForEnv(env, action_topack)
+
+          ### repacking flat action array for environment
+          try:
+            state, reward, done, info = env.step(action_repacked)
+            action_accept = True
+          except AssertionError:
+            #print "failed action sampling"
+
+            n_failed_sampling += 1
+            if n_failed_sampling>=10:
+
+              reward = -1e9
+              done = True
+              info = None
+              action_accept = True
+              print len(actions), "give up"
+              
 
         actions.append(action)
         rewards.append(reward)
@@ -461,13 +531,17 @@ class PG(object):
         if (not num_episodes) and t == self.config.batch_size:
           break
 
-      logprob = self.sess.run(self.logprob, feed_dict={self.action_placeholder: actions, self.observation_placeholder: states}  )
+        if step %100==0:
+          print "sampling step", step
         
       path = {"observation" : np.array(states), 
-                      "reward" : np.array(rewards), 
-                      "action" : np.array(actions)}
+              "reward" : np.array(rewards), 
+              "action" : np.array(actions)}
+
       paths.append(path)
+      
       episode += 1
+
       if num_episodes and episode >= num_episodes:
         break        
 
@@ -503,7 +577,6 @@ class PG(object):
 
       
         path_returns.append(path_return)
-      #print path_returns
 
       
       #######################################################
@@ -546,6 +619,8 @@ class PG(object):
     if self.config.use_baseline:
 
       baseline = self.sess.run(self.baseline, {self.observation_placeholder:observations})
+
+      print "return and baseline shape", returns.shape, baseline.shape
       
       adv = adv - baseline
 
@@ -555,6 +630,8 @@ class PG(object):
 
     #######################################################
     #########          END YOUR CODE.          ############
+
+    print "advantages shape", adv.shape
     
     return adv
   
@@ -591,9 +668,16 @@ class PG(object):
     scores_eval = [] # list of scores computed at iteration time
   
     for t in range(self.config.num_batches):
-  
+      
+      print "training iteration", t
+        
       # collect a minibatch of samples
-      paths, total_rewards = self.sample_path(self.env) 
+      paths, total_rewards = self.sample_path(self.env)
+
+      #print paths, total_rewards
+
+      print "sampled epoch", t, "len of paths", len(paths)
+      
       scores_eval = scores_eval + total_rewards
       observations = np.concatenate([path["observation"] for path in paths])
       actions = np.concatenate([path["action"] for path in paths])
@@ -610,26 +694,12 @@ class PG(object):
         self.action_placeholder : actions,
         self.advantage_placeholder : advantages})
 
-      #print "returns", returns.shape
-      #print "advantages", advantages.shape
-      #print "actions", actions.shape
-      #print "observations", observations.shape
-
-
       loss = self.sess.run(self.loss, feed_dict={
         self.observation_placeholder : observations, 
         self.action_placeholder : actions,
         self.advantage_placeholder : advantages})
 
-      #print "advantage", advantages
-      print "iteration", t
       print "loss", loss
-
-#      baseline_loss = self.sess.run( self.baseline_loss, feed_dict={
-#        self.observation_placeholder : observations,
-#        self.baseline_target_placeholder: returns})
-#      print" baseline loss", baseline_loss
-
   
       # tf stuff
       if (t % self.config.summary_freq == 0):
@@ -646,6 +716,8 @@ class PG(object):
         self.logger.info("Recording...")
         last_record =0
         self.record()
+
+      print "finished this iteration", t
   
     self.logger.info("- Training done.")
     export_plot(scores_eval, "Score", config.env_name, self.config.plot_output)
@@ -692,13 +764,12 @@ class PG(object):
           
 if __name__ == '__main__':
 
-  data_path = "/home/zihaoj/gym-rlcrptocurrency/"
+  data_path = "/home/zihaoj/CS234/project/gym-rlcrptocurrency/"
   markets = [
     [Market("{:s}/bitstampUSD_1-min_data_2012-01-01_to_2018-01-08.csv".format(data_path))],
     [Market("{:s}/coinbaseUSD_1-min_data_2014-12-01_to_2018-01-08.csv".format(data_path))],
   ]
   
-
   env = gym.make(config.env_name)
   env.set_markets(markets)
   print "environment", env
