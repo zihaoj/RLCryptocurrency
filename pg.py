@@ -52,18 +52,19 @@ def build_mlp(
   with tf.variable_scope(scope):
 
     dense=[]
+    flatten = tf.contrib.layers.flatten(mlp_input, scope='flatten')
 
     for il in range(n_layers):
       
       thisdense = None
       if il ==0:
-        thisdense = tf.contrib.layers.fully_connected(inputs = mlp_input, num_outputs = size, activation_fn = config.activation, scope = "dense"+str(il))
+        thisdense = tf.contrib.layers.fully_connected(inputs = flatten, num_outputs = size, activation_fn = config.activation, scope = "dense"+str(il))
       else:
         thisdense = tf.contrib.layers.fully_connected(inputs = dense[il-1], num_outputs = size, activation_fn = config.activation, scope = "dense"+str(il))
 
       dense.append(thisdense)
 
-    output = tf.contrib.layers.fully_connected(inputs = dense[-1], num_outputs = output_size, activation_fn = None, scope = "output", weights_initializer = tf.zeros_initializer(), biases_initializer = tf.zeros_initializer() )
+    output = tf.contrib.layers.fully_connected(inputs = dense[-1], num_outputs = output_size, activation_fn = output_activation, scope = "output", weights_initializer = tf.zeros_initializer(), biases_initializer = tf.zeros_initializer() )
   
     return output
 
@@ -144,6 +145,7 @@ class PG(object):
     print "action dim", self.action_dim
 
     self.lr = self.config.learning_rate
+    self.replaysteps = self.config.replaysteps
 
     self.build()
 
@@ -163,7 +165,9 @@ class PG(object):
     """
     #######################################################
     #########   YOUR CODE HERE - 8-12 lines.   ############
-    self.observation_placeholder = tf.placeholder(tf.float32, shape=(None, self.observation_dim))
+    self.observation_placeholder = tf.placeholder(tf.float32, shape=(None, self.replaysteps, self.observation_dim) )
+    self.action_constraint_up_placeholder   = tf.placeholder(tf.float32, shape=(self.env._n_currency+1 ) )
+    self.action_constraint_dn_placeholder   = tf.placeholder(tf.float32, shape=(self.env._n_currency+1 ) )
     if self.discrete:
       self.action_placeholder = tf.placeholder(tf.int64,   shape=(None))
     else:
@@ -218,16 +222,17 @@ class PG(object):
     #######################################################
     #########   YOUR CODE HERE - 5-10 lines.   ############
     
-    action_means =          build_mlp(mlp_input=self.observation_placeholder,
-                                      output_size = self.action_dim,
-                                      scope=scope,
-                                      n_layers=self.config.n_layers, size=self.config.layer_size, output_activation=None)
+    self.action_means =          build_mlp(mlp_input=self.observation_placeholder,
+                                           output_size = self.action_dim,
+                                           scope=scope,
+                                           n_layers=self.config.n_layers, size=self.config.layer_size, output_activation=None)
     
-    log_std =               tf.get_variable("logsigma", shape=[self.action_dim], dtype = tf.float32, initializer=tf.initializers.constant([-2,-4]) )
+    self.log_std =               tf.get_variable("logsigma", shape=[self.action_dim], dtype = tf.float32, initializer=tf.initializers.constant([-2,-2]) )
 
-    self.sampled_action =   tf.random_normal( shape=[self.action_dim], mean=action_means, stddev=tf.exp(log_std) )
+    self.sampled_action = tf.random_normal( shape=[self.action_dim], mean=self.action_means, stddev=tf.exp(self.log_std) )
+    self.sampled_action = tf.clip_by_value(self.sampled_action, self.action_constraint_dn_placeholder, self.action_constraint_up_placeholder)
   
-    mvn = tf.contrib.distributions.MultivariateNormalDiag(action_means, tf.exp(log_std) )
+    mvn = tf.contrib.distributions.MultivariateNormalDiag(self.action_means, tf.exp(self.log_std) )
     self.logprob        =   mvn.log_prob(self.action_placeholder)
     #######################################################
     #########          END YOUR CODE.          ############
@@ -265,8 +270,7 @@ class PG(object):
     with tf.variable_scope("policy_network"):    
       var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope = "policy_network")
       adam_optimizer = tf.train.AdamOptimizer(learning_rate = self.lr)
-      #grads = adam_optimizer.compute_gradients(loss = self.loss, var_list = var_list)
-      self.train_op = adam_optimizer.minimize(self.loss) #adam_optimizer.apply_gradients(grads)
+      self.train_op = adam_optimizer.minimize(self.loss) 
 
     #######################################################
     #########          END YOUR CODE.          ############
@@ -306,7 +310,6 @@ class PG(object):
       
       var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope = scope)
       adam_optimizer = tf.train.AdamOptimizer(learning_rate = self.lr)
-      #grads = adam_optimizer.compute_gradients(loss = loss, var_list = var_list)
       self.update_baseline_op = adam_optimizer.minimize(loss)
     #######################################################
     #########          END YOUR CODE.          ############
@@ -418,7 +421,7 @@ class PG(object):
     self.file_writer.add_summary(summary, t)
   
   
-  def sample_path(self, env, num_episodes = None):
+  def sample_path(self, env, sampling_date, num_episodes = None):
     """
     Sample path for the environment.
   
@@ -441,28 +444,58 @@ class PG(object):
     paths = []
     t = 0
 
-    start_date = date(2017, 1, 1)
-    print "start_date", start_date
-
     while (num_episodes or t < self.config.batch_size):
-      print "in while loop"
 
-      thisdate = (start_date + timedelta(t)).strftime("%Y-%m-%d")
+
 
       init_portfolio = np.array([ [10000, 1],
                                   [10000, 1], ],
                                 dtype=np.float64)
 
+      thisdate = (sampling_date + timedelta(episode)).strftime("%Y-%m-%d")
+
       state, _, _, _ = env.init( init_portfolio, thisdate)
-      states, actions, rewards = [], [], []
+      states, actions, rewards, constraints = [], [], [], []
       episode_reward = 0
 
-
       for step in range(self.config.max_ep_len):
-
+        
         ### flatten the state array
         state_flatten = np.array([])
 
+        portfolio_array = state[0]
+
+        cash_1 = portfolio_array[0,0]/ np.max(state[1][:,:,-1])
+        cash_2 = portfolio_array[1,0]/ np.max(state[1][:,:,-1])
+        btc_1  = portfolio_array[0,1]
+        btc_2  = portfolio_array[1,1]
+
+        #buffering at 0.05 bitcoins
+        cash_1 = (cash_1>0.05)* cash_1
+        cash_2 = (cash_2>0.05)* cash_2
+        btc_1 = (btc_1>0.05)* btc_1
+        btc_2 = (btc_2>0.05)* btc_2
+
+
+        cash_1 = ( state[1][0,:,-1]< state[1][1,:,-1] )* cash_1
+        cash_2 = ( state[1][1,:,-1]< state[1][0,:,-1] )* cash_2
+
+        cash_1_up_constraint = np.min( [cash_1, btc_2,  config.max_quantity_per_transaction*2]  )/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_1 and BTC_2
+        cash_1_dn_constraint = -np.min( [cash_2, btc_1, config.max_quantity_per_transaction*2]  )/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_2 and BTC_1
+
+        btc_1 = (portfolio_array[0,1]>portfolio_array[1,1]+1e-4)*btc_1
+        btc_2 = (portfolio_array[1,1]>portfolio_array[0,1]+1e-4)*btc_2
+
+        btc_1_up_constraint =  np.min([btc_1/2, config.max_quantity_per_transaction])*(1-env._fee_transfer)  #BTC_1
+        btc_1_dn_constraint = -np.min([btc_2/2, config.max_quantity_per_transaction])*(1-env._fee_transfer)  #BTC_2
+
+        
+        portfolio_up_constraints = np.array([cash_1_up_constraint, btc_1_up_constraint])
+        portfolio_dn_constraints = np.array([cash_1_dn_constraint, btc_1_dn_constraint])
+
+        constraints.append(  (portfolio_up_constraints, portfolio_dn_constraints) )
+
+                                          
         for isubarray in range(2):
           if config.use_only_price_info:
             if isubarray ==0:
@@ -472,19 +505,32 @@ class PG(object):
           else:
             state_flatten = np.concatenate( (state_flatten, state[isubarray].flatten()) )
 
-        states.append(state_flatten)
+
+        if step ==0:
+          for r in range(self.replaysteps):
+            states.append(state_flatten)
+
+        else:
+          states.append(state_flatten)
+
 
         action_accept = False
         n_failed_sampling = 0
+
+        action_means = self.sess.run(self.action_means, feed_dict={self.observation_placeholder : [states[-self.replaysteps:]]})
+        log_std      = self.sess.run(self.log_std, feed_dict={self.observation_placeholder : [states[-self.replaysteps:]]})
+                                        
         while not action_accept:
-          action  = self.sess.run(self.sampled_action, feed_dict={self.observation_placeholder : states[-1][None]})[0]
+          action  = self.sess.run(self.sampled_action, feed_dict={self.observation_placeholder : [states[-self.replaysteps:]],
+                                                                  self.action_constraint_up_placeholder : portfolio_up_constraints,
+                                                                  self.action_constraint_dn_placeholder : portfolio_dn_constraints,})[0]
 
           ## purchase action has last element constrained to balance other exchange activities
           purchase_action = action[0: self.action_purchase_dim]
           if ( np.sum(purchase_action)>0 ):
-            purchase_action = np.append( purchase_action, -np.sum(purchase_action))#*(1-env._fee_transfer)) to confirm 
+            purchase_action = np.append( purchase_action, -np.sum(purchase_action))*(1-env._fee_transfer) #to confirm 
           else:
-            purchase_action = np.append( purchase_action, -np.sum(purchase_action))#/(1-env._fee_transfer))
+            purchase_action = np.append( purchase_action, -np.sum(purchase_action))/(1-env._fee_transfer)
           
           transfer_flat = action[ self.action_purchase_dim:]
           transfer_action = np.zeros( (env._n_exchange, env._n_exchange, env._n_currency) )
@@ -509,18 +555,14 @@ class PG(object):
             state, reward, done, info = env.step(action_repacked)
             action_accept = True
           except AssertionError:
-            #print "failed action sampling"
-
             n_failed_sampling += 1
-            if n_failed_sampling>=10:
-
-              reward = -1e9
+            if n_failed_sampling>100:
+              reward = 0
               done = True
               info = None
               action_accept = True
-              print len(actions), "give up"
+              print "give up at step ", step,len(paths), 
               
-
         actions.append(action)
         rewards.append(reward)
         episode_reward += reward
@@ -531,8 +573,11 @@ class PG(object):
         if (not num_episodes) and t == self.config.batch_size:
           break
 
-        if step %100==0:
-          print "sampling step", step
+        if step % 500==0:
+          print "sampling step", step, 
+          print "constraint purchase:", round(cash_1_up_constraint,3), round(cash_1_dn_constraint,3),  "constraint transfer:", round(btc_1_up_constraint,3), round(btc_1_dn_constraint,3), 
+          print "action", action, "means", action_means, "log_std", np.exp(log_std)
+          print "final portfolio state", state[0].flatten()
         
       path = {"observation" : np.array(states), 
               "reward" : np.array(rewards), 
@@ -666,17 +711,22 @@ class PG(object):
     
     self.init_averages()
     scores_eval = [] # list of scores computed at iteration time
+
+    start_date = date(2017, 1, 1)
+    #print "start_date", start_date
+
   
     for t in range(self.config.num_batches):
       
-      print "training iteration", t
+
+      thisdate = (start_date + timedelta(t))
         
       # collect a minibatch of samples
-      paths, total_rewards = self.sample_path(self.env)
+      paths, total_rewards = self.sample_path(self.env, thisdate)
 
       #print paths, total_rewards
 
-      print "sampled epoch", t, "len of paths", len(paths)
+      #print "sampled epoch", t, "len of paths", len(paths)
       
       scores_eval = scores_eval + total_rewards
       observations = np.concatenate([path["observation"] for path in paths])
@@ -684,18 +734,36 @@ class PG(object):
       rewards = np.concatenate([path["reward"] for path in paths])
       # compute Q-val estimates (discounted future returns) for each time step
       returns = self.get_returns(paths)
-      advantages = self.calculate_advantage(returns, observations)
+
+      #print "observation shape", observations.shape
+      #print observations
+      observations_stack = []
+
+      for ip in range(len(paths)):
+
+        for io in range(paths[ip]["observation"].shape[0]-self.replaysteps+1):
+          tmp_stack = []
+
+          for r in range(self.replaysteps):
+            
+            tmp_stack.append( paths[ip]["observation"][ io+r  ] )
+
+          observations_stack.append( tmp_stack )
+
+      observations_stack = np.array(observations_stack)
+      advantages = self.calculate_advantage(returns, observations_stack)
 
       # run training operations
       if self.config.use_baseline:
-        self.update_baseline(returns, observations)
+        self.update_baseline(returns, observations_stack)
+
       self.sess.run(self.train_op, feed_dict={
-        self.observation_placeholder : observations, 
+        self.observation_placeholder : observations_stack, 
         self.action_placeholder : actions,
         self.advantage_placeholder : advantages})
 
       loss = self.sess.run(self.loss, feed_dict={
-        self.observation_placeholder : observations, 
+        self.observation_placeholder : observations_stack, 
         self.action_placeholder : actions,
         self.advantage_placeholder : advantages})
 
@@ -764,7 +832,7 @@ class PG(object):
           
 if __name__ == '__main__':
 
-  data_path = "/home/zihaoj/CS234/project/gym-rlcrptocurrency/"
+  data_path = "../gym-rlcrptocurrency"
   markets = [
     [Market("{:s}/bitstampUSD_1-min_data_2012-01-01_to_2018-01-08.csv".format(data_path))],
     [Market("{:s}/coinbaseUSD_1-min_data_2014-12-01_to_2018-01-08.csv".format(data_path))],
