@@ -10,7 +10,7 @@ import scipy.signal
 import os
 import time
 #import inspect
-from utils.general import get_logger, Progbar, export_plot
+from rl_cryptocurrency.utils.general import get_logger, Progbar, export_plot
 from config import config
 from datetime import timedelta, date
 

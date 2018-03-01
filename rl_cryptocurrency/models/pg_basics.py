@@ -12,7 +12,7 @@ import pandas as pd
 from gym_rlcrptocurrency.envs import RLCrptocurrencyEnv
 
 from config import config
-from utils.general import get_logger, export_plot
+from rl_cryptocurrency.utils.general import get_logger, export_plot
 
 
 def build_mlp(mlp_input, output_size, scope, n_layers, size, hidden_activation, output_activation=None):
