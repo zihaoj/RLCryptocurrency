@@ -14,7 +14,7 @@ from gym_rlcrptocurrency.envs import RLCrptocurrencyEnv
 from utils.general import get_logger
 
 
-def build_mlp(mlp_input, output_size, scope, n_layers, size, hidden_activation):
+def build_mlp(mlp_input, output_size, scope, n_layers, size, hidden_activation, output_activation=None):
     """
     A generic function to build a simple feed forward network
 
@@ -24,6 +24,7 @@ def build_mlp(mlp_input, output_size, scope, n_layers, size, hidden_activation):
     :param n_layers: Number of hidden layers
     :param size: Size of hidden units on each layer
     :param hidden_activation: Activation for hidden layers
+    :param output_activation: Activation for output layer. None means linear transformation only.
     :return: Output tensor from NN
     """
 
@@ -32,8 +33,7 @@ def build_mlp(mlp_input, output_size, scope, n_layers, size, hidden_activation):
         for i_layer in range(n_layers):
             net = tf.contrib.layers.fully_connected(inputs=net, num_outputs=size, activation_fn=hidden_activation,
                                                     scope="layer_{:d}".format(i_layer))
-        # linear output
-        net = tf.contrib.layers.fully_connected(inputs=net, num_outputs=output_size, activation_fn=None,
+        net = tf.contrib.layers.fully_connected(inputs=net, num_outputs=output_size, activation_fn=output_activation,
                                                 scope="output")
 
     return net
@@ -250,11 +250,24 @@ class PG(object):
             n_layers=self.get_config("n_layers"),
             size=self.get_config("layer_size"),
             hidden_activation=self.get_config("activation"),
+            output_activation=None,
         )
 
-        # TODO: normalize the action logits before sampling
-
         with tf.variable_scope("policy_sample"):
+            with tf.variable_scope("policy_normalize"):
+                # normalize action logits
+                # specifically, we do one separate normalization per exchange
+                action_logits__mean_packed = tf.reshape(action_logits__mean, shape=(-1, self._n_exchange, self._n_currency+1))
+                action_logits__mean_packed__mean, action_logits__mean_packed__var = tf.nn.moments(
+                    action_logits__mean_packed,
+                    axes=-1,
+                    keep_dims=True,
+                )
+                action_logits__mean_packed = action_logits__mean_packed - action_logits__mean_packed__mean
+                action_logits__mean_packed = action_logits__mean_packed / tf.sqrt(action_logits__mean_packed__var)
+                # unpack back to original shape
+                action_logits__mean = tf.layers.flatten(action_logits__mean_packed)
+
             # sample from it
             action_logits__logstd = tf.get_variable(name="log_std", shape=(action_dimension,), dtype=tf.float32)
             self._sampled_action = action_logits__mean + \
