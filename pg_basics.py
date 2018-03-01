@@ -7,11 +7,12 @@
 import os
 import tensorflow as tf
 import numpy as np
-from copy import deepcopy
+import pandas as pd
 
 from gym_rlcrptocurrency.envs import RLCrptocurrencyEnv
 
-from utils.general import get_logger
+from config import config
+from utils.general import get_logger, export_plot
 
 
 def build_mlp(mlp_input, output_size, scope, n_layers, size, hidden_activation, output_activation=None):
@@ -145,55 +146,169 @@ class PG(object):
 
         return self
 
-    def sample_path(self, env, num_episodes=None, **env_init):
+    def sample_path(self, env, init_portfolio, start_date, num_episodes=None):
         """
         Sample path with current policy network
 
         :param env: environment object
         :param num_episodes: Number of episodes. If None, then keep samping until batch_size is reached
-        :param env_init: The environment initialization parameters in env.init(xxx)
+        :param init_portfolio: Initial portfolio
+        :param start_date: The starting date of path sampling, in string format "yyyy-mm-dd"
+                           Notice that each episode is at most one day. After one episode is finished, we would jump
+                           to the start of next day in next episode
         :return: tuple of (paths, total_rewards):
                  * paths: List of path, each of which is a dictionary with:
-                     * path["observations"] Numpy array of observation in a format compatible with network input
-                     * path["actions"] Numpy array of actions in a format compatible with network output
-                     * path["rewards"] Numpy array of rewards along the path
+                     * path["observations"] List of observations as returned by environment
+                     * path["actions"] List of actions as output by policy network
+                     * path["rewards"] List of rewards along the path
                  * total_rewards: List of total rewards, one for each path
         """
 
         episode = 0
-        episode_rewards = []
-        paths = []
         t = 0
 
+        episode_rewards = []
+        paths = []
+
+        # loop over episodes
         while num_episodes or t < self.get_config("batch_size"):
-            state = env.init(**env_init)
-            states, actions, rewards = [], [], []
+            # update initial time to next day
+            init_time = pd.to_datetime(start_date) + pd.Timedelta(episode, unit="d")
+
+            # initialization for current episode
+            obs, _, _, _ = env.init(init_portfolio, init_time)
+            observations, actions, rewards = [], [], []
             episode_reward = 0
 
-            for step in range(self.config.max_ep_len):
-                states.append(state)
-                action = self.sess.run(self.sampled_action, feed_dict={self.observation_placeholder: states[-1][None]})[
-                    0]
-                state, reward, done, info = env.step(action)
+            # loop over time-stamps
+            for step in range(self.get_config("max_ep_len")):
+                # note current obs
+                observations.append(obs)
+
+                # run policy
+                action = self._sess.run(
+                    self._sampled_action,
+                    feed_dict={self._obs_placeholder: self._obs_transformer(observations[-1])[None]}
+                )[0]
+
+                # run environment to get next step
+                obs, reward, done, info = env.step(self._action_transformer(action, obs))
                 actions.append(action)
                 rewards.append(reward)
                 episode_reward += reward
                 t += 1
-                if (done or step == self.config.max_ep_len - 1):
+
+                # episode termination condition
+                if done or step == self.get_config("max_ep_len") - 1:
                     episode_rewards.append(episode_reward)
                     break
-                if (not num_episodes) and t == self.config.batch_size:
+                if (not num_episodes) and t == self.get_config("batch_size"):
                     break
 
-            path = {"observation": np.array(states),
-                    "reward": np.array(rewards),
-                    "action": np.array(actions)}
+            # summarize on episode
+            path = {
+                "observation": observations,
+                "actions": actions,
+                "rewards": rewards,
+            }
             paths.append(path)
             episode += 1
             if num_episodes and episode >= num_episodes:
                 break
 
         return paths, episode_rewards
+
+    def train(self, init_portfolio, start_date):
+        """
+        Performs training
+
+        :param init_portfolio: Initial portfolio
+        :param start_date: Starting date
+        :return Self, for chaining
+        """
+
+        last_eval = 0
+        last_record = 0
+
+        self._init_averages()
+        scores_eval = []  # list of scores computed at iteration time
+
+        for t in range(self.get_config("num_batches")):
+            # Initialization for each batch
+            # Notice that we shift by one day forward in each batch
+            init_portfolio_batch = np.copy(init_portfolio)
+            start_date_bath = pd.to_datetime(start_date) + pd.Timedelta(1, unit="d")
+
+            # sample paths for current batch
+            paths, total_rewards = self.sample_path(self._env, init_portfolio_batch, start_date_bath)
+
+            # update evaluation scores
+            scores_eval += total_rewards
+
+            # concatenate all episodes along time-stamp dimension
+            observations = reduce(lambda x, y: x+y, map(lambda path: path["observations"], paths))
+            actions = reduce(lambda x, y: x+y, map(lambda path: path["actions"], paths))
+            rewards = reduce(lambda x, y: x+y, map(lambda path: path["rewards"], paths))
+
+            # get advantages
+            returns = self._get_returns(paths)
+            advantages = self._calculate_advantage(returns, observations)
+
+            # update baseline network, if applicable
+            if self.get_config("use_baeline"):
+                self._update_baseline(returns, observations)
+
+            # update policy network
+            self._sess.run(
+                self._train_op,
+                feed_dict={
+                    self._obs_placeholder: np.array(map(self._obs_transformer, observations)),
+                    self._action_placeholder: np.array(actions),
+                    self._advantage_placeholder: advantages,
+                }
+            )
+
+            # tf stuff
+            if t % self.get_config("summary_freq") == 0:
+                self._update_averages(total_rewards, scores_eval)
+                self._record_summary(t)
+
+            # compute reward statistics for this batch and log
+            avg_reward = np.mean(total_rewards)
+            sigma_reward = np.sqrt(np.var(total_rewards) / len(total_rewards))
+            msg = "Average reward: {:04.2f} +/- {:04.2f}".format(avg_reward, sigma_reward)
+            self._logger.info(msg)
+
+            if self.get_config("record") and (last_record > self.get_config("record_freq")):
+
+                raise NotImplementedError("No recording available!")
+
+                # self._logger.info("Recording...")
+                # last_record = 0
+                # self._record()
+
+        self._logger.info("- Training done.")
+        export_plot(scores_eval, "Score", config.env_name, self.get_config("plot_output"))
+
+    def evaluate(self, env, num_episodes, **init):
+        """
+        Evaluates the return for num_episodes episodes.
+
+        :param env: An external environment
+        :param num_episodes: Number of episodes to run
+        :param init: Initialization parameters ins sample_path()
+        :return Average rewards
+        """
+
+        paths, rewards = self.sample_path(env, num_episodes=num_episodes, **init)
+
+        avg_reward = np.mean(rewards)
+        sigma_reward = np.sqrt(np.var(rewards) / len(rewards))
+
+        msg = "Average reward: {:04.2f} +/- {:04.2f}".format(avg_reward, sigma_reward)
+        self._logger.info(msg)
+
+        return avg_reward
 
     ########################################
     # Methods that build up the operations #
@@ -298,7 +413,7 @@ class PG(object):
         """
 
         with tf.variable_scope("policy_loss"):
-            self._loss = -tf.reduce_mean(self._logprob * self._action_placeholder)
+            self._loss = -tf.reduce_mean(self._logprob * self._advantage_placeholder)
 
         return self
 
@@ -444,6 +559,28 @@ class PG(object):
 
         return np.concatenate((obs_portfolio.reshape((-1,)), obs_market.reshape((-1,)), obs_buffer.reshape((-1,))))
 
+    def _obs_transformer_inverse(self, obs):
+        """
+        Inverse of _obs_transformer
+
+        :param obs: Observation numpy array to be fed into policy network
+        :return: Observation numpy array as provided by environment
+        """
+
+        obs = np.copy(obs)
+
+        obs_portfolio = obs[:self._n_exchange * (self._n_currency + 1)]
+        obs_market = obs[self._n_exchange * (self._n_currency + 1):self._n_exchange * (self._n_currency + 1)+self._n_exchange * self._n_currency * self._d_market]
+        obs_buffer = obs[self._n_exchange * (self._n_currency + 1)+self._n_exchange * self._n_currency * self._d_market:self._n_exchange * (self._n_currency + 1)+self._n_exchange * self._n_currency * self._d_market+self._n_currency]
+
+        # we specify all dimensions explicitly
+        # so that error would be thrown out if input is incompatible
+        obs_portfolio = obs_portfolio.reshape((self._n_exchange, self._n_currency + 1))
+        obs_market = obs_market.reshape((self._n_exchange, self._n_currency, self._d_market))
+        obs_buffer = obs_buffer.reshape((self._n_currency,))
+
+        return obs_portfolio, obs_market, obs_buffer
+
     def _action_transformer(self, action, obs_env):
         """
         Transformation from NN output action logits to the actual action acceptable by environment
@@ -509,6 +646,8 @@ class PG(object):
 
         purchase_matrix = kernel(obs_portfolio, price_matrix_adjusted, action_softmax)
 
+        # TODO: let's hope this would work ...
+        # Otherwise a iteration would be needed here ...
         assert np.all((purchase_matrix > 0) == mask_buy), "Incompatible buy!"
         assert np.all((purchase_matrix < 0) == mask_sell), "Incompatible sell!"
 
@@ -544,6 +683,74 @@ class PG(object):
 
         # done. return
         return purchase_matrix, transfer_matrix
+
+    def _get_returns(self, paths):
+        """
+        Calculate the returns G_t for each timestep
+
+        :param paths: The path as returned by sample_path()
+        :return 1-D numpy array of all returns
+        """
+
+        all_returns = []
+        for path in paths:
+            rewards = path["rewards"]
+            returns_reversed = [0.]
+            for r in reversed(rewards):
+                last_return = returns_reversed[-1]
+                returns_reversed.append(r + self.get_config("gamma") * last_return)
+            returns = returns_reversed[:0:-1]
+            all_returns.append(returns)
+
+        returns = np.concatenate(all_returns)
+        return returns
+
+    def _calculate_advantage(self, returns, observations):
+        """
+        Calculate the advantage using current baseline network
+
+        :param returns: 1-D numpy array of returns for each time-step
+        :param observations: List of observations for each time-step
+        :return 1-D numpy array of advantages for each time-step
+        """
+
+        adv = returns
+
+        if self.get_config("use_baseline"):
+            baselines = self._sess.run(
+                self._baseline,
+                feed_dict={
+                    self._obs_placeholder: np.array(map(self._obs_transformer, observations)),
+                }
+            )
+            adv = returns - baselines
+
+        if self.get_config("normalize_advantage"):
+            mean = np.mean(adv)
+            std = np.std(adv)
+            adv = (adv - mean) / std
+
+        return adv
+
+    def _update_baseline(self, returns, observations):
+        """
+        Update the baseline network
+
+        :param returns: 1-D numpy array of returns for each time-step
+        :param observations: List of observations for each time-step
+        :return Self, for chaining
+        """
+
+        self._sess.run(
+            self._baseline_train_op,
+            feed_dict={
+                self._obs_placeholder: np.array(map(self._obs_transformer, observations)),
+                self._baseline_target_placeholder: returns,
+            }
+        )
+
+        return self
+
 
 
 
