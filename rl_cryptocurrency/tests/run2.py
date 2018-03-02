@@ -3,7 +3,7 @@ from gym_rlcrptocurrency.envs import Market
 import numpy as np
 
 from rl_cryptocurrency.models.pg_basics import PG
-from rl_cryptocurrency.models.config import config
+from config2 import config
 
 
 # setup market data

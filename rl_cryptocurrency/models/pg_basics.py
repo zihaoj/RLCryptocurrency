@@ -8,10 +8,9 @@ import os
 import tensorflow as tf
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from gym_rlcrptocurrency.envs import RLCrptocurrencyEnv
-
-from config import config
 from rl_cryptocurrency.utils.general import get_logger, export_plot
 
 
@@ -170,18 +169,30 @@ class PG(object):
         episode_rewards = []
         paths = []
 
+        pbar = tqdm(total=self.get_config("batch_size"), desc="Sampling mini-batch", disable=False)
+
         # loop over episodes
         while num_episodes or t < self.get_config("batch_size"):
-            # update initial time to next day
-            init_time = pd.to_datetime(start_date) + pd.Timedelta(episode, unit="d")
-
             # initialization for current episode
-            obs, _, _, _ = env.init(init_portfolio, init_time)
+            if episode == 0:
+                obs, _, _, _ = env.init(init_portfolio, start_date)
+            else:
+                # TODO:
+                # init time searching in Market object is a bit time consuming
+                # thus, to save time, we operate on market time index directly
+                # here we are assuming the data is always in an interval of 1 minute
+
+                # we start a new episode following the last day of previous episode
+                env.init(init_portfolio, None)
+                obs, _, _, _ = env.move_market(t)
+
             observations, actions, rewards = [], [], []
             episode_reward = 0
 
             # loop over time-stamps
-            for step in range(self.get_config("max_ep_len")):
+            for step in tqdm(range(self.get_config("max_ep_len")),
+                             desc="Sampling episode {:d}".format(episode),
+                             disable=True):
                 # note current obs
                 observations.append(obs)
 
@@ -192,11 +203,15 @@ class PG(object):
                 )[0]
 
                 # run environment to get next step
-                obs, reward, done, info = env.step(self._action_transformer(action, obs))
+                action_env = self._action_transformer(action, obs)
+                obs, reward, done, info = env.step(action_env)
                 actions.append(action)
                 rewards.append(reward)
                 episode_reward += reward
                 t += 1
+
+                # update progress bar
+                pbar.update()
 
                 # episode termination condition
                 if done or step == self.get_config("max_ep_len") - 1:
@@ -207,7 +222,7 @@ class PG(object):
 
             # summarize on episode
             path = {
-                "observation": observations,
+                "observations": observations,
                 "actions": actions,
                 "rewards": rewards,
             }
@@ -237,10 +252,11 @@ class PG(object):
             # Initialization for each batch
             # Notice that we shift by one day forward in each batch
             init_portfolio_batch = np.copy(init_portfolio)
-            start_date_bath = pd.to_datetime(start_date) + pd.Timedelta(1, unit="d")
+            # start_date_batch = pd.to_datetime(start_date) + pd.Timedelta(t, unit="d")
+            start_date_batch = pd.to_datetime(start_date)
 
             # sample paths for current batch
-            paths, total_rewards = self.sample_path(self._env, init_portfolio_batch, start_date_bath)
+            paths, total_rewards = self.sample_path(self._env, init_portfolio_batch, start_date_batch)
 
             # update evaluation scores
             scores_eval += total_rewards
@@ -248,14 +264,14 @@ class PG(object):
             # concatenate all episodes along time-stamp dimension
             observations = reduce(lambda x, y: x+y, map(lambda path: path["observations"], paths))
             actions = reduce(lambda x, y: x+y, map(lambda path: path["actions"], paths))
-            rewards = reduce(lambda x, y: x+y, map(lambda path: path["rewards"], paths))
+            # rewards = reduce(lambda x, y: x+y, map(lambda path: path["rewards"], paths))
 
             # get advantages
             returns = self._get_returns(paths)
             advantages = self._calculate_advantage(returns, observations)
 
             # update baseline network, if applicable
-            if self.get_config("use_baeline"):
+            if self.get_config("use_baseline"):
                 self._update_baseline(returns, observations)
 
             # update policy network
@@ -288,7 +304,9 @@ class PG(object):
                 # self._record()
 
         self._logger.info("- Training done.")
-        export_plot(scores_eval, "Score", config.env_name, self.get_config("plot_output"))
+        export_plot(scores_eval, "Score", self.get_config("env_name"), self.get_config("plot_output"))
+
+        return self
 
     def evaluate(self, env, num_episodes, **init):
         """
@@ -398,19 +416,17 @@ class PG(object):
         return self
 
     def _add_loss_op(self):
-        """
-        Sets the loss of a batch, the loss is a scalar
-        Recall the update for REINFORCE with advantage:
-        θ = θ + α ∇_θ log π_θ(s_t, a_t) A_t
-
-        Think about how to express this update as minimizing a
-        loss (so that tensorflow will do the gradient computations
-        for you).
-
-        Set the loss to self._loss
-
-        :return: Self, for chaining
-        """
+        # """
+        # Sets the loss of a batch, the loss is a scalar
+        #
+        # Think about how to express this update as minimizing a
+        # loss (so that tensorflow will do the gradient computations
+        # for you).
+        #
+        # Set the loss to self._loss
+        #
+        # :return: Self, for chaining
+        # """
 
         with tf.variable_scope("policy_loss"):
             self._loss = -tf.reduce_mean(self._logprob * self._advantage_placeholder)
@@ -629,44 +645,64 @@ class PG(object):
         # however, we are unable to get the purchase matrix unless we know the price matrix
         # what a chicken & egg problem ...
         # so here is the heuristics
-        # given the fee is small, we assume the sign of purchase matrix is insensitive to fee
-        # so we first obtain purchase matrix as if there is no fee, and set the sign based on that
-        # then we adjust the price matrix according to sign and compute purchase matrix again
+        # we would do it in an iterative manner, starting with some buy / sell side mask, get adjusted price matrix
+        # and get purchase matrix. Then check if buy / sell side from purchase matrix is consistent. If not, then
+        # we get new buy / sell mask, get new adjusted price matrix and do iteration until convergence
 
         obs_portfolio, obs_market, _ = obs_env
         price_matrix = obs_market[:, :, self._price_index]
 
+        # initialize with no fee
         purchase_matrix_nofee = kernel(obs_portfolio, price_matrix, action_softmax)
         mask_buy = purchase_matrix_nofee > 0
         mask_sell = purchase_matrix_nofee < 0
 
-        price_matrix_adjusted = np.copy(price_matrix)
-        price_matrix_adjusted[mask_buy] /= ((1.0 - self._fee_exchange) * (1.0 - self._fee_transfer))
-        price_matrix_adjusted[mask_sell] *= (1.0 - self._fee_exchange)
+        counter = 0
+        log = []
+        while True:
+            if counter >= 10:
+                # self._logger.warning("No way to decide purchase matrix after 10 iteration. "
+                #                   "Below is the current purchase matrix. No purchase for this time step")
+                # self._logger.warning(log[-1])
 
-        purchase_matrix = kernel(obs_portfolio, price_matrix_adjusted, action_softmax)
+                purchase_matrix = np.zeros((self._n_exchange, self._n_currency), dtype=np.float32)
+                break
 
-        # TODO: let's hope this would work ...
-        # Otherwise a iteration would be needed here ...
-        assert np.all((purchase_matrix > 0) == mask_buy), "Incompatible buy!"
-        assert np.all((purchase_matrix < 0) == mask_sell), "Incompatible sell!"
+            price_matrix_adjusted = np.copy(price_matrix)
+            price_matrix_adjusted[mask_buy] /= ((1.0 - self._fee_exchange) * (1.0 - self._fee_transfer))
+            price_matrix_adjusted[mask_sell] *= (1.0 - self._fee_exchange)
+
+            purchase_matrix = kernel(obs_portfolio, price_matrix_adjusted, action_softmax)
+            log.append(purchase_matrix)
+
+            if np.all((purchase_matrix > 0) == mask_buy) and np.all((purchase_matrix < 0) == mask_sell):
+                break
+            else:
+                mask_buy = purchase_matrix > 0
+                mask_sell = purchase_matrix < 0
+                counter += 1
 
         # next, we derive the transfer matrix based on purchase matrix
         # The idea is we immediately balance accounts across all exchanges
         transfer_matrix = np.zeros(shape=(self._n_exchange, self._n_exchange, self._n_currency), dtype=np.float32)
 
-        indices_buy = map(lambda xy: tuple(xy), np.where(purchase_matrix > 0))
-        indices_sell = map(lambda xy: tuple(xy), np.where(purchase_matrix < 0))
+        # get index of element in purchase_matrix
+        def _get_index(condition):
+            x_list, y_list = np.where(condition)
+            return zip(x_list, y_list)
+
+        indices_buy = _get_index(purchase_matrix > 0)
+        indices_sell = _get_index(purchase_matrix < 0)
 
         for currency in range(self._n_currency):
-            queue_buy = map(lambda xy: (xy[0], purchase_matrix[xy[0], xy[1]]),
+            queue_buy = map(lambda xy: [xy[0], purchase_matrix[xy[0], xy[1]]],
                             filter(lambda xy: xy[1] == currency, indices_buy))
-            queue_sell = map(lambda xy: (xy[0], -purchase_matrix[xy[0], xy[1]]),
+            queue_sell = map(lambda xy: [xy[0], -purchase_matrix[xy[0], xy[1]]],
                              filter(lambda xy: xy[1] == currency, indices_sell))
 
             while len(queue_buy) > 0 and len(queue_sell) > 0:
                 exchange_from = queue_buy[0][0]
-                exchange_to = queue_buy[0][0]
+                exchange_to = queue_sell[0][0]
 
                 if queue_buy[0][1] > queue_sell[0][1]:
                     amount = queue_sell[0][1]
@@ -676,7 +712,7 @@ class PG(object):
                     amount = queue_buy[0][1]
                     queue_buy.pop(0)
                     queue_sell[0][1] -= amount
-                    if queue_sell[0][1] == 0:
+                    if np.isclose(queue_sell[0][1], 0.):
                         queue_sell.pop(0)
 
                 transfer_matrix[exchange_from, exchange_to, currency] += amount
