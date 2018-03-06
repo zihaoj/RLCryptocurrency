@@ -12,7 +12,7 @@ import time
 #import inspect
 from utils.general import get_logger, Progbar, export_plot
 from config import config
-from datetime import timedelta, date
+from datetime import timedelta, date, datetime
 
 
 def build_mlp(
@@ -69,6 +69,34 @@ def build_mlp(
     return output
 
 
+def build_rnn(
+          rnn_input, 
+          n_hidden,
+          batch_size,
+          rnn_length,
+          output_size,
+          scope, 
+          output_activation=None):
+  '''
+  Build a recurrent neural netowrk
+  '''
+  #######################################################
+  #########   YOUR CODE HERE - 7-20 lines.   ############
+  
+  with tf.variable_scope(scope):
+
+    rnn_cell = tf.contrib.rnn.BasicLSTMCell(n_hidden, state_is_tuple=True)
+
+    outputs, states = tf.nn.dynamic_rnn(rnn_cell, rnn_input, dtype=tf.float32)
+
+    val = tf.transpose(outputs, [1,0,2])
+    last = tf.gather(val, int(val.get_shape()[0])-1)
+    
+    output = tf.contrib.layers.fully_connected(inputs =last , num_outputs = output_size, activation_fn = output_activation, scope = "output")
+  
+    return output
+
+
 def RepackActionForEnv(env, action):
 
   purchase = action[0:env._n_exchange*env._n_currency]
@@ -86,7 +114,7 @@ class PG(object):
   """
   Abstract Class for implementing a Policy Gradient Based Algorithm
   """
-  def __init__(self, env, config, logger=None):
+  def __init__(self, env, env_reverse, config, logger=None):
     """
     Initialize Policy Gradient Class
   
@@ -110,18 +138,23 @@ class PG(object):
     if logger is None:
       self.logger = get_logger(config.log_path)
     self.env = env
+    self.env_reverse = env_reverse
   
     # discrete action space or continuous action space
     self.discrete = isinstance(env.action_space, gym.spaces.Discrete)
 
     # get observation dimension
     self.observation_dim =0
-    self.observation_dim += env._n_exchange *(env._n_currency+1)  ## portfolio
+
+    ### do not use porfolio info
+    #self.observation_dim += env._n_exchange *(env._n_currency+1)  ## portfolio
 
     if config.use_only_price_info:
-      self.observation_dim += env._n_exchange * env._n_currency
+      self.observation_dim += env._n_exchange*(env._n_exchange-1)/2 * env._n_currency
     else:
-      self.observation_dim += env._n_exchange * env._n_currency * len(env.market_obs_attributes)
+      self.observation_dim += env._n_exchange*(env._n_exchange-1)/2 * env._n_currency *2 + env._n_currency  ## price difference + price difference ratio + amount in transfer 
+
+    #self.observation_dim += env._n_exchange * env._n_currency * len(env.market_obs_attributes) use full info
 
 
     print "obs dim", self.observation_dim
@@ -140,12 +173,21 @@ class PG(object):
     self.action_transfer_dim = (env._n_exchange-1)*env._n_exchange*env._n_currency/2
     
     self.action_dim += self.action_purchase_dim
-    self.action_dim += self.action_transfer_dim
+
+    ## do not use transfer action
+    ##self.action_dim += self.action_transfer_dim
 
     print "action dim", self.action_dim
 
     self.lr = self.config.learning_rate
     self.replaysteps = self.config.replaysteps
+
+    self.init_portfolio = np.array([ [10000, 1],
+                                     [10000, 1], ],
+                                   dtype=np.float64)
+
+    self.start_date = datetime(2015, 3, 1)
+    self.env.init( self.init_portfolio, self.start_date )
 
     self.build()
 
@@ -165,9 +207,14 @@ class PG(object):
     """
     #######################################################
     #########   YOUR CODE HERE - 8-12 lines.   ############
-    self.observation_placeholder = tf.placeholder(tf.float32, shape=(None, self.replaysteps, self.observation_dim) )
-    self.action_constraint_up_placeholder   = tf.placeholder(tf.float32, shape=(self.env._n_currency+1 ) )
-    self.action_constraint_dn_placeholder   = tf.placeholder(tf.float32, shape=(self.env._n_currency+1 ) )
+    self.observation_placeholder = None
+
+    if self.config.network_type == "RNN":
+      self.observation_placeholder = tf.placeholder(tf.float32, shape=(None, self.config.max_ep_len, self.observation_dim) )
+    if self.config.network_type == "MLP":
+      self.observation_placeholder = tf.placeholder(tf.float32, shape=(None, self.replaysteps, self.observation_dim) )
+    self.action_constraint_up_placeholder   = tf.placeholder(tf.float32, shape=(None, self.action_dim), name="action_up_placeholder" )
+    self.action_constraint_dn_placeholder   = tf.placeholder(tf.float32, shape=(None, self.action_dim), name="action_dn_placeholder" )
     if self.discrete:
       self.action_placeholder = tf.placeholder(tf.int64,   shape=(None))
     else:
@@ -221,18 +268,32 @@ class PG(object):
     """
     #######################################################
     #########   YOUR CODE HERE - 5-10 lines.   ############
-    
-    self.action_means =          build_mlp(mlp_input=self.observation_placeholder,
-                                           output_size = self.action_dim,
-                                           scope=scope,
-                                           n_layers=self.config.n_layers, size=self.config.layer_size, output_activation=None)
-    
-    self.log_std =               tf.get_variable("logsigma", shape=[self.action_dim], dtype = tf.float32, initializer=tf.initializers.constant([-2,-2]) )
 
-    self.sampled_action = tf.random_normal( shape=[self.action_dim], mean=self.action_means, stddev=tf.exp(self.log_std) )
-    self.sampled_action = tf.clip_by_value(self.sampled_action, self.action_constraint_dn_placeholder, self.action_constraint_up_placeholder)
+    self.action_means = None
+    
+    if self.config.network_type == "MLP":
+      self.action_means =          build_mlp(mlp_input=self.observation_placeholder,
+                                             output_size = self.action_dim,
+                                             scope=scope,
+                                             n_layers=self.config.n_layers, size=self.config.layer_size, output_activation=tf.nn.sigmoid)
+
+    if self.config.network_type == "RNN":
+
+      self.action_means =          build_rnn(rnn_input=self.observation_placeholder,
+                                             n_hidden = self.config.layer_size,
+                                             batch_size = self.config.batch_size,
+                                             rnn_length = self.config.max_ep_len,
+                                             output_size = self.action_dim,
+                                             scope=scope,
+                                             output_activation=tf.nn.sigmoid)
+
+    self.action_means_tf = (self.action_constraint_up_placeholder-self.action_constraint_dn_placeholder)*self.action_means+self.action_constraint_dn_placeholder
+    self.log_std =          tf.get_variable("logsigma", shape=[self.action_dim], dtype = tf.float32, initializer=tf.initializers.constant([-2.5]*self.action_dim) )
+
+    self.sampled_action = tf.random_normal( shape=[self.action_dim], mean=self.action_means_tf, stddev=tf.exp(self.log_std) )
+    #self.sampled_action = tf.clip_by_value(self.sampled_action, self.action_constraint_dn_placeholder, self.action_constraint_up_placeholder)
   
-    mvn = tf.contrib.distributions.MultivariateNormalDiag(self.action_means, tf.exp(self.log_std) )
+    mvn = tf.contrib.distributions.MultivariateNormalDiag(self.action_means_tf, tf.exp(self.log_std) )
     self.logprob        =   mvn.log_prob(self.action_placeholder)
     #######################################################
     #########          END YOUR CODE.          ############
@@ -299,9 +360,21 @@ class PG(object):
     ######################################################
     #########   YOUR CODE HERE - 4-8 lines.   ############
 
-    with tf.variable_scope("baseline"):    
-      self.baseline = tf.squeeze(build_mlp(mlp_input=self.observation_placeholder, output_size = 1, scope="baseline",
-                                           n_layers=self.config.n_layers, size=self.config.layer_size, output_activation=None) )
+    with tf.variable_scope("baseline"):   
+
+      self.baseline = None
+
+      if self.config.network_type == "MLP":
+        self.baseline = tf.squeeze(build_mlp(mlp_input=self.observation_placeholder, output_size = 1, scope="baseline",
+                                             n_layers=self.config.n_layers, size=self.config.layer_size, output_activation=None) )
+      if self.config.network_type == "RNN":
+        self.baseline = build_rnn(rnn_input=self.observation_placeholder,
+                                  n_hidden = self.config.layer_size,
+                                  batch_size = self.config.batch_size,
+                                  rnn_length = self.config.max_ep_len,
+                                  output_size = 1,
+                                  scope=scope,
+                                  output_activation= None)
 
       self.baseline_target_placeholder = tf.placeholder(tf.float32, shape=(None))
 
@@ -446,16 +519,10 @@ class PG(object):
 
     while (num_episodes or t < self.config.batch_size):
 
+      thisdate = (sampling_date + timedelta(minutes=episode*self.config.max_ep_len))
 
-
-      init_portfolio = np.array([ [10000, 1],
-                                  [10000, 1], ],
-                                dtype=np.float64)
-
-      thisdate = (sampling_date + timedelta(episode)).strftime("%Y-%m-%d")
-
-      state, _, _, _ = env.init( init_portfolio, thisdate)
-      states, actions, rewards, constraints = [], [], [], []
+      state, _, _, _ = env.init( self.init_portfolio, thisdate)
+      states, actions, rewards, constraints_up, constraints_dn = [], [], [], [], []
       episode_reward = 0
 
       for step in range(self.config.max_ep_len):
@@ -477,53 +544,102 @@ class PG(object):
         btc_2 = (btc_2>0.05)* btc_2
 
 
+        '''
         cash_1 = ( state[1][0,:,-1]< state[1][1,:,-1] )* cash_1
         cash_2 = ( state[1][1,:,-1]< state[1][0,:,-1] )* cash_2
 
-        cash_1_up_constraint = np.min( [cash_1, btc_2,  config.max_quantity_per_transaction*2]  )/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_1 and BTC_2
-        cash_1_dn_constraint = -np.min( [cash_2, btc_1, config.max_quantity_per_transaction*2]  )/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_2 and BTC_1
+        cash_1_up_constraint = min( [cash_1[0], btc_2,  config.max_quantity_per_transaction*2])/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_1 and BTC_2
+        cash_1_dn_constraint = -min( [cash_2[0], btc_1, config.max_quantity_per_transaction*2])/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_2 and BTC_1
+        '''
+
+        cash_1_up_constraint = min( [cash_1, btc_2,  config.max_quantity_per_transaction*2])/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_1 and BTC_2
+        cash_1_dn_constraint = -min( [cash_2, btc_1, config.max_quantity_per_transaction*2])/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_2 and BTC_1
+
 
         btc_1 = (portfolio_array[0,1]>portfolio_array[1,1]+1e-4)*btc_1
         btc_2 = (portfolio_array[1,1]>portfolio_array[0,1]+1e-4)*btc_2
 
         btc_1_up_constraint =  np.min([btc_1/2, config.max_quantity_per_transaction])*(1-env._fee_transfer)  #BTC_1
         btc_1_dn_constraint = -np.min([btc_2/2, config.max_quantity_per_transaction])*(1-env._fee_transfer)  #BTC_2
-
         
+        '''
         portfolio_up_constraints = np.array([cash_1_up_constraint, btc_1_up_constraint])
         portfolio_dn_constraints = np.array([cash_1_dn_constraint, btc_1_dn_constraint])
+        '''
 
-        constraints.append(  (portfolio_up_constraints, portfolio_dn_constraints) )
+        portfolio_up_constraints = [cash_1_up_constraint]
+        portfolio_dn_constraints = [cash_1_dn_constraint]
 
-                                          
-        for isubarray in range(2):
+
+        for isubarray in range(3):
           if config.use_only_price_info:
-            if isubarray ==0:
-              state_flatten = np.concatenate( (state_flatten, state[isubarray].flatten()) )
+            if isubarray ==0 or isubarray ==2:
+              pass
+              ### no portfolio info used
+              #state_flatten = np.concatenate( (state_flatten, state[isubarray].flatten()) )
             else:
-              state_flatten = np.concatenate( (state_flatten, state[isubarray][:,:,-1].flatten()) )
+              currency_price = state[isubarray][:,:,-1].flatten()
+              price_difference = []
+
+              for iex in range( currency_price.shape[0]):
+                for jex in range( iex+1, currency_price.shape[0]):
+                  price_difference.append( currency_price[iex]-currency_price[jex])
+              state_flatten = np.array(  price_difference)
+
           else:
-            state_flatten = np.concatenate( (state_flatten, state[isubarray].flatten()) )
+            if isubarray ==0:
+              pass
+              ### no portfolio info used
+            elif isubarray ==1:
+              currency_price = state[isubarray][:,:,-1].flatten()
+              price_difference = []
+
+              for iex in range( currency_price.shape[0]):
+                for jex in range( iex+1, currency_price.shape[0]):
+                  price_difference.append( currency_price[iex]-currency_price[jex])
+                  price_difference.append( (currency_price[iex]-currency_price[jex])/ currency_price[iex]  )
+
+            elif isubarray ==2:
+              currency_in_transfer = state[isubarray]
+              state_flatten = np.concatenate(  (price_difference, currency_in_transfer) ).flatten()
 
 
         if step ==0:
-          for r in range(self.replaysteps):
-            states.append(state_flatten)
+          if self.config.network_type == "MLP":
+            for r in range(self.replaysteps):
+              states.append(state_flatten)
+          if self.config.network_type == "RNN":
+            for r in range(self.config.max_ep_len):
+              states.append([0]*self.observation_dim)
 
         else:
           states.append(state_flatten)
 
-
         action_accept = False
         n_failed_sampling = 0
 
-        action_means = self.sess.run(self.action_means, feed_dict={self.observation_placeholder : [states[-self.replaysteps:]]})
-        log_std      = self.sess.run(self.log_std, feed_dict={self.observation_placeholder : [states[-self.replaysteps:]]})
-                                        
+        action_means = None
+        log_std  = None
+
+
+        if self.config.network_type == "MLP":
+          action_means = self.sess.run(self.action_means, feed_dict={self.observation_placeholder : np.array([states[-self.replaysteps:]])})
+          log_std      = self.sess.run(self.log_std,      feed_dict={self.observation_placeholder : np.array([states[-self.replaysteps:]])})
+
+        if self.config.network_type == "RNN":
+          action_means = self.sess.run(self.action_means, feed_dict={self.observation_placeholder : np.array([states[-self.config.max_ep_len:]])})
+          log_std      = self.sess.run(self.log_std,      feed_dict={self.observation_placeholder : np.array([states[-self.config.max_ep_len:]])})
+
         while not action_accept:
-          action  = self.sess.run(self.sampled_action, feed_dict={self.observation_placeholder : [states[-self.replaysteps:]],
-                                                                  self.action_constraint_up_placeholder : portfolio_up_constraints,
-                                                                  self.action_constraint_dn_placeholder : portfolio_dn_constraints,})[0]
+          if self.config.network_type == "MLP":
+            action  = self.sess.run(self.sampled_action, feed_dict={self.observation_placeholder : [states[-self.replaysteps:]],
+                                                                    self.action_constraint_up_placeholder : [portfolio_up_constraints],
+                                                                    self.action_constraint_dn_placeholder : [portfolio_dn_constraints],})[0]
+          if self.config.network_type == "RNN":
+            action  = self.sess.run(self.sampled_action, feed_dict={self.observation_placeholder : [states[-self.config.max_ep_len:]],
+                                                                    self.action_constraint_up_placeholder : [portfolio_up_constraints],
+                                                                    self.action_constraint_dn_placeholder : [portfolio_dn_constraints],})[0]
+
 
           ## purchase action has last element constrained to balance other exchange activities
           purchase_action = action[0: self.action_purchase_dim]
@@ -532,6 +648,23 @@ class PG(object):
           else:
             purchase_action = np.append( purchase_action, -np.sum(purchase_action))/(1-env._fee_transfer)
           
+
+          ''' constrain transfer to happen at the same time as purchase '''
+          transfer_action = np.zeros( (env._n_exchange, env._n_exchange, env._n_currency) )
+          itransfer = -1
+          for iccur  in range(env._n_currency ):
+            for iex in range( env._n_exchange ):
+              for jex in range( iex, env._n_exchange ):
+                # transfer matrix diagonal always 0
+                if iex == jex:
+                  continue
+                else:
+                  itransfer +=1
+                  transfer_action[ iex, jex,  iccur] = purchase_action[iex ]
+                  transfer_action[ jex, iex,  iccur] = -purchase_action[iex ]
+
+
+          ''' transfer can happen anytime
           transfer_flat = action[ self.action_purchase_dim:]
           transfer_action = np.zeros( (env._n_exchange, env._n_exchange, env._n_currency) )
           itransfer = -1
@@ -546,6 +679,7 @@ class PG(object):
                   itransfer +=1
                   transfer_action[ iex, jex,  iccur] = transfer_flat[itransfer]
                   transfer_action[ jex, iex,  iccur] = -transfer_flat[itransfer]
+          '''
 
           action_topack = np.concatenate( (purchase_action, transfer_action.flatten())  )
           action_repacked = RepackActionForEnv(env, action_topack)
@@ -562,9 +696,14 @@ class PG(object):
               info = None
               action_accept = True
               print "give up at step ", step,len(paths), 
-              
+        
+        #print "states", states[-self.replaysteps:], "action", action
+
         actions.append(action)
         rewards.append(reward)
+        constraints_up.append(portfolio_up_constraints)
+        constraints_dn.append(portfolio_dn_constraints)
+
         episode_reward += reward
         t += 1
         if (done or step == self.config.max_ep_len-1):
@@ -573,15 +712,20 @@ class PG(object):
         if (not num_episodes) and t == self.config.batch_size:
           break
 
-        if step % 500==0:
-          print "sampling step", step, 
-          print "constraint purchase:", round(cash_1_up_constraint,3), round(cash_1_dn_constraint,3),  "constraint transfer:", round(btc_1_up_constraint,3), round(btc_1_dn_constraint,3), 
-          print "action", action, "means", action_means, "log_std", np.exp(log_std)
-          print "final portfolio state", state[0].flatten()
+        if step % 50 ==0:
+          
+          print "final portfolio state", state[0].flatten(), "reward", state[0].flatten()[0]+state[0].flatten()[2]
+          msg = "Sampling: {:04.2f} ".format(step)
+          self.logger.info(msg)
+          msg = "Actioin Means: {:04.9f}".format(action_means[0][0])
+          self.logger.info(msg)
         
       path = {"observation" : np.array(states), 
               "reward" : np.array(rewards), 
-              "action" : np.array(actions)}
+              "action" : np.array(actions),
+              "constraint_up" : np.array(constraints_up),
+              "constraint_dn" : np.array(constraints_dn)}
+
 
       paths.append(path)
       
@@ -663,8 +807,11 @@ class PG(object):
     #########   YOUR CODE HERE - 5-10 lines.   ############
     if self.config.use_baseline:
 
-      baseline = self.sess.run(self.baseline, {self.observation_placeholder:observations})
 
+      print "return and observations shape", returns.shape, observations.shape
+
+      baseline = self.sess.run(self.baseline, {self.observation_placeholder:observations})
+      
       print "return and baseline shape", returns.shape, baseline.shape
       
       adv = adv - baseline
@@ -712,43 +859,43 @@ class PG(object):
     self.init_averages()
     scores_eval = [] # list of scores computed at iteration time
 
-    start_date = date(2017, 1, 1)
-    #print "start_date", start_date
-
   
-    for t in range(self.config.num_batches):
+    for t in range(self.config.num_batches*2):
+
+      env = self.env
+      if t%2==0:
+        env = self.env
+      else:
+        env = self.env_reverse
       
-
-      thisdate = (start_date + timedelta(t))
-        
-      # collect a minibatch of samples
-      paths, total_rewards = self.sample_path(self.env, thisdate)
-
-      #print paths, total_rewards
-
-      #print "sampled epoch", t, "len of paths", len(paths)
+      thisdate = (self.start_date + timedelta(minutes=t*self.config.batch_size/2) )
+      paths, total_rewards = self.sample_path(env, thisdate)
       
       scores_eval = scores_eval + total_rewards
       observations = np.concatenate([path["observation"] for path in paths])
       actions = np.concatenate([path["action"] for path in paths])
       rewards = np.concatenate([path["reward"] for path in paths])
-      # compute Q-val estimates (discounted future returns) for each time step
+      constraints_up = np.concatenate([path["constraint_up"] for path in paths])
+      constraints_dn = np.concatenate([path["constraint_dn"] for path in paths])
       returns = self.get_returns(paths)
-
-      #print "observation shape", observations.shape
-      #print observations
+      
       observations_stack = []
-
-      for ip in range(len(paths)):
-
-        for io in range(paths[ip]["observation"].shape[0]-self.replaysteps+1):
-          tmp_stack = []
-
-          for r in range(self.replaysteps):
             
-            tmp_stack.append( paths[ip]["observation"][ io+r  ] )
+      if self.config.network_type == "MLP":
+        for ip in range(len(paths)):
+          for io in range(paths[ip]["observation"].shape[0]-self.replaysteps+1):
+            tmp_stack = []
+            for r in range(self.replaysteps):
+              tmp_stack.append( paths[ip]["observation"][ io+r  ] )
+            observations_stack.append( tmp_stack )
 
-          observations_stack.append( tmp_stack )
+      if self.config.network_type == "RNN":
+        for ip in range(len(paths)):
+          for io in range(paths[ip]["observation"].shape[0]-self.config.max_ep_len+1):
+            tmp_stack = []
+            for r in range(self.config.max_ep_len):
+              tmp_stack.append( paths[ip]["observation"][ io+r  ] )
+            observations_stack.append( tmp_stack )
 
       observations_stack = np.array(observations_stack)
       advantages = self.calculate_advantage(returns, observations_stack)
@@ -760,15 +907,25 @@ class PG(object):
       self.sess.run(self.train_op, feed_dict={
         self.observation_placeholder : observations_stack, 
         self.action_placeholder : actions,
+        self.action_constraint_up_placeholder : constraints_up,
+        self.action_constraint_dn_placeholder : constraints_dn,
         self.advantage_placeholder : advantages})
 
       loss = self.sess.run(self.loss, feed_dict={
         self.observation_placeholder : observations_stack, 
         self.action_placeholder : actions,
+        self.action_constraint_up_placeholder : constraints_up,
+        self.action_constraint_dn_placeholder : constraints_dn,
         self.advantage_placeholder : advantages})
 
+      baseline_loss = self.sess.run(self.baseline_loss, feed_dict={
+        self.observation_placeholder : observations_stack, 
+        self.baseline_target_placeholder : returns} )
+
+      
       print "loss", loss
-  
+      print "baseline loss", baseline_loss
+
       # tf stuff
       if (t % self.config.summary_freq == 0):
         self.update_averages(total_rewards, scores_eval)
@@ -798,7 +955,7 @@ class PG(object):
     episodes.
     """
     if env==None: env = self.env
-    paths, rewards = self.sample_path(env, num_episodes)
+    paths, rewards = self.sample_path(env, self.start_date)
     avg_reward = np.mean(rewards)
     sigma_reward = np.sqrt(np.var(rewards) / len(rewards))
     msg = "Average reward: {:04.2f} +/- {:04.2f}".format(avg_reward, sigma_reward)
@@ -810,11 +967,10 @@ class PG(object):
      """
      Re create an env and record a video for one episode
      """
-     env = gym.make(self.config.env_name)
-     env = gym.wrappers.Monitor(env, self.config.record_path, video_callable=lambda x: True, resume=True)
-     self.evaluate(env, 1)
+     #env = gym.make(self.config.env_name)
+     #env = gym.wrappers.Monitor(env, self.config.record_path, video_callable=lambda x: True, resume=True)
+     self.evaluate(None, 1)
   
-
   def run(self):
     """
     Apply procedures of training for a PG.
@@ -837,11 +993,20 @@ if __name__ == '__main__':
     [Market("{:s}/bitstampUSD_1-min_data_2012-01-01_to_2018-01-08.csv".format(data_path))],
     [Market("{:s}/coinbaseUSD_1-min_data_2014-12-01_to_2018-01-08.csv".format(data_path))],
   ]
+
+  markets_rev = [
+    [Market("{:s}/coinbaseUSD_1-min_data_2014-12-01_to_2018-01-08.csv".format(data_path))],
+    [Market("{:s}/bitstampUSD_1-min_data_2012-01-01_to_2018-01-08.csv".format(data_path))],
+  ]
   
   env = gym.make(config.env_name)
   env.set_markets(markets)
-  print "environment", env
+
+  env_reverse = gym.make(config.env_name)
+  env_reverse.set_markets(markets_rev)
+
+  print "environment", env, env_reverse
   
   # train model
-  model = PG(env, config)
+  model = PG(env, env_reverse, config)
   model.run()
