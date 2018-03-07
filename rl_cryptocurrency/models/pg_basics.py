@@ -45,11 +45,15 @@ class PG(object):
     Wrapper class with models, training and evaluation procedures enclosed.
     """
 
-    def __init__(self, env, config, logger=None):
+    def __init__(self, env, env_aux, config, logger=None):
         """
         Initialize Policy Gradient Class
 
         :param env: OpenAI environment. Have to be RLCrptocurrencyEnv currently
+        :param env_aux: Auxiliary environment. For example, this can be the inverse "env" such that agent will not
+                        be fooled by the situation when price at one exchange is always higher than another
+                        But in general, this can be any perturbation of default environment for improving agent
+                        robustness. It can be None, in case one does not want it.
         :param config: Configuration with all necessary hyper-parameters
         :param logger: Logging instance
         """
@@ -64,6 +68,12 @@ class PG(object):
         if logger is None:
             self._logger = get_logger(config.log_path)
         self._env = env
+
+        # auxiliary environment
+        self._env_aux = env_aux
+        if self._env_aux is not None:
+            self._logger.info("You have added an auxiliary environment. No check is performed on it, "
+                              "but you must make sure it is consistent with default environment!")
 
         # check environment
         assert isinstance(self._env, RLCrptocurrencyEnv), "Only RLCrptocurrencyEnv supported for now!"
@@ -271,64 +281,72 @@ class PG(object):
         scores_eval = []  # list of scores computed at iteration time
 
         for t in range(self.get_config("num_batches")):
-            # Initialization for each batch
-            init_portfolio_batch = np.copy(init_portfolio)
-            if t == 0:
-                start_date_batch = start_date
-            else:
-                if self.get_config("batch_start_over"):
-                    start_date_batch = 0
+
+            env_local_list = [self._env]
+            if self._env_aux is not None:
+                env_local_list.append(self._env_aux)
+
+            for env_local in env_local_list:
+                self._logger.info("\nRunning environment {:s} ...".format(env_local.name))
+
+                # Initialization for each batch
+                init_portfolio_batch = np.copy(init_portfolio)
+                if t == 0:
+                    start_date_batch = start_date
                 else:
-                    start_date_batch = t * self.get_config("batch_size")
+                    if self.get_config("batch_start_over"):
+                        start_date_batch = 0
+                    else:
+                        start_date_batch = t * self.get_config("batch_size")
 
-            # sample paths for current batch
-            paths, total_rewards = self.sample_path(self._env, init_portfolio_batch, start_date_batch)
+                # sample paths for current batch
+                paths, total_rewards = self.sample_path(env_local, init_portfolio_batch, start_date_batch)
 
-            # update evaluation scores
-            scores_eval += total_rewards
+                # update evaluation scores
+                scores_eval += total_rewards
 
-            # concatenate all episodes along time-stamp dimension
-            observations = reduce(lambda x, y: x+y, map(lambda path: path["observations"], paths))
-            actions = reduce(lambda x, y: x+y, map(lambda path: path["actions"], paths))
-            # rewards = reduce(lambda x, y: x+y, map(lambda path: path["rewards"], paths))
+                # concatenate all episodes along time-stamp dimension
+                observations = reduce(lambda x, y: x+y, map(lambda path: path["observations"], paths))
+                actions = reduce(lambda x, y: x+y, map(lambda path: path["actions"], paths))
+                # rewards = reduce(lambda x, y: x+y, map(lambda path: path["rewards"], paths))
 
-            # get advantages
-            returns = self._get_returns(paths)
-            advantages = self._calculate_advantage(returns, observations)
+                # get advantages
+                returns = self._get_returns(paths)
+                advantages = self._calculate_advantage(returns, observations)
 
-            # update baseline network, if applicable
-            if self.get_config("use_baseline"):
-                self._update_baseline(returns, observations)
+                # update baseline network, if applicable
+                if self.get_config("use_baseline"):
+                    self._update_baseline(returns, observations)
 
-            # update policy network
-            _, grad_norm, loss = \
-                self._sess.run(
-                    [self._train_op, self._grad_norm, self._loss],
-                    feed_dict={
-                        self._obs_placeholder: np.array(map(self._obs_transformer, observations)),
-                        self._action_placeholder: np.array(actions),
-                        self._advantage_placeholder: advantages,
-                    }
-                )
+                # update policy network
+                _, grad_norm, loss = \
+                    self._sess.run(
+                        [self._train_op, self._grad_norm, self._loss],
+                        feed_dict={
+                            self._obs_placeholder: np.array(map(self._obs_transformer, observations)),
+                            self._action_placeholder: np.array(actions),
+                            self._advantage_placeholder: advantages,
+                        }
+                    )
 
-            # tf stuff
-            if t % self.get_config("summary_freq") == 0:
-                self._update_averages(total_rewards, scores_eval)
-                self._record_summary(t, grad_norm, loss)
+                # tf stuff
+                if t % self.get_config("summary_freq") == 0:
+                    self._update_averages(total_rewards, scores_eval)
+                    self._record_summary(t, grad_norm, loss)
 
-            # compute reward statistics for this batch and log
-            avg_reward = np.mean(total_rewards)
-            sigma_reward = np.sqrt(np.var(total_rewards) / len(total_rewards))
-            msg = "Average reward: {:04.2f} +/- {:04.2f}".format(avg_reward, sigma_reward)
-            self._logger.info(msg)
+                # compute reward statistics for this batch and log
+                avg_reward = np.mean(total_rewards)
+                sigma_reward = np.sqrt(np.var(total_rewards) / len(total_rewards))
+                msg = "Average reward: {:04.2f} +/- {:04.2f}".format(avg_reward, sigma_reward)
+                self._logger.info(msg)
 
-            if self.get_config("record") and (last_record > self.get_config("record_freq")):
+                if self.get_config("record") and (last_record > self.get_config("record_freq")):
 
-                raise NotImplementedError("No recording available!")
+                    raise NotImplementedError("No recording available!")
 
-                # self._logger.info("Recording...")
-                # last_record = 0
-                # self._record()
+                    # self._logger.info("Recording...")
+                    # last_record = 0
+                    # self._record()
 
         self._logger.info("- Training done.")
         export_plot(scores_eval, "Score", self.get_config("env_name"), self.get_config("plot_output"))

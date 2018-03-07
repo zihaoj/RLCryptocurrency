@@ -17,17 +17,13 @@ class PG2Exchange1Currency(PG):
     Wrapper class with models, training and evaluation procedures enclosed.
     """
 
-    def __init__(self, env, config, logger=None):
+    def __init__(self, env, env_aux, config, logger=None):
         """
-        Initialize Policy Gradient Class
-
-        :param env: OpenAI environment. Have to be RLCrptocurrencyEnv currently
-        :param config: Configuration with all necessary hyper-parameters
-        :param logger: Logging instance
+        Constructor
         """
 
         # initialize through base class
-        super(PG2Exchange1Currency, self).__init__(env, config, logger)
+        super(PG2Exchange1Currency, self).__init__(env, env_aux, config, logger)
 
         # assertion on environment
         assert self._n_exchange == 2, "PG2Exchange1Currency only supports 2 exchanges!"
@@ -46,14 +42,14 @@ class PG2Exchange1Currency(PG):
         """
 
         with tf.variable_scope("placeholder"):
-            # Obs here refers to the one that is directly fed into NN
-            # In this implementation, we simply flatten everything into one row
-            obs_dimension = self._n_exchange * (self._n_currency + 1)  # portfolio
-            obs_dimension += self._n_exchange * self._n_currency * self._d_market  # market info
-            obs_dimension += self._n_currency  # buffer
-            self._obs_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, obs_dimension),
-                                                   name="obs_placeholder")
-            # self._obs_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, 1), name="obs_placeholder")
+            # # Obs here refers to the one that is directly fed into NN
+            # # In this implementation, we simply flatten everything into one row
+            # obs_dimension = self._n_exchange * (self._n_currency + 1)  # portfolio
+            # obs_dimension += self._n_exchange * self._n_currency * self._d_market  # market info
+            # obs_dimension += self._n_currency  # buffer
+            # self._obs_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, obs_dimension),
+            #                                        name="obs_placeholder")
+            self._obs_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, 1), name="obs_placeholder")
 
             # Action here refers to the one directly sampled out of distribution as parameterized by policy NN
             self._action_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, 1),
@@ -176,11 +172,11 @@ class PG2Exchange1Currency(PG):
         obs_portfolio, obs_market, obs_buffer = obs_env
 
         # a simplified version: just look at price gap
-        # price_gap = obs_market[0, 0, self._price_index] - obs_market[1, 0, self._price_index]
-        # return np.array([price_gap])
+        price_gap = obs_market[0, 0, self._price_index] - obs_market[1, 0, self._price_index]
+        return np.array([price_gap])
 
         # more complete version: take all available information in!
-        return np.concatenate((obs_portfolio.reshape((-1,)), obs_market.reshape((-1,)), obs_buffer.reshape((-1,))))
+        # return np.concatenate((obs_portfolio.reshape((-1,)), obs_market.reshape((-1,)), obs_buffer.reshape((-1,))))
 
     def _action_transformer(self, action, obs_env):
         """

@@ -15,8 +15,12 @@ markets = [
 ]
 
 # setup environment
-env = gym.make("rlcrptocurrency-v0")
+env = gym.make("rlcrptocurrency-v0").set_name("DefaultEnv")
 env.set_markets(markets)
+
+# setup reversed environment
+env_aux = gym.make("rlcrptocurrency-v0").set_name("ReverseEnv")
+env_aux.set_markets(markets[::-1])
 
 # initialize environment
 init_portfolio = np.array(
@@ -26,13 +30,13 @@ init_portfolio = np.array(
     ],
     dtype=np.float64
 )
-# start_date = "2015-3-1"
+start_date = "2015-3-1"
 # start_date = "2015-8-23"
-start_date = "2017-1-1"
+# start_date = "2017-1-1"
 
 # create model
 # agent = PG(env, config).build().initialize()
-agent = PG2Exchange1Currency(env, config).build().initialize()
+agent = PG2Exchange1Currency(env, env_aux, config).build().initialize()
 
 # training job
 agent = agent.train(init_portfolio, start_date)
