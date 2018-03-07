@@ -31,7 +31,7 @@ class config():
 
     n_layers = 1
     layer_size = 16
-    activation = staticmethod(tf.nn.relu)
+    activation = staticmethod(tf.nn.leaky_relu)
 
     # since we start new episodes for each batch
 

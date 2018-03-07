@@ -91,7 +91,8 @@ class PG2Exchange1Currency(PG):
 
         with tf.variable_scope("policy_sample"):
             # define variable log of std
-            action_logits__logstd = tf.get_variable(name="log_std", shape=(1,), dtype=tf.float32)
+            action_logits__logstd = tf.get_variable(name="log_std", shape=(1,), dtype=tf.float32,
+                                                    initializer=tf.constant_initializer(-5))
             action_logits__std = tf.exp(action_logits__logstd, name="std")
             self._logstd = action_logits__logstd
 
