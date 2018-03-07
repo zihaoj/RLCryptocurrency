@@ -26,7 +26,9 @@ init_portfolio = np.array(
     ],
     dtype=np.float64
 )
-start_date = "2015-3-1"
+# start_date = "2015-3-1"
+# start_date = "2015-8-23"
+start_date = "2017-1-1"
 
 # create model
 # agent = PG(env, config).build().initialize()

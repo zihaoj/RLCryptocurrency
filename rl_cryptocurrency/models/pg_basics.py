@@ -9,6 +9,7 @@ import tensorflow as tf
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from copy import deepcopy
 
 from gym_rlcrptocurrency.envs import RLCrptocurrencyEnv
 from rl_cryptocurrency.utils.general import get_logger, export_plot
@@ -210,9 +211,22 @@ class PG(object):
                     feed_dict={self._obs_placeholder: self._obs_transformer(observations[-1])[None]}
                 )[0]
 
-                # run environment to get next step
+                # transform to an action acceptable by environment
                 action_env = self._action_transformer(action, obs)
+
+                # run environment
+                # if not env.check_obs_action(action_env, verbose=True):
+                #     print "----> Now you have an error"
+                #     print "----> Here is current observation"
+                #     print env.get_observation()
+                #     print "----> Here is current action"
+                #     print action
+                #     print action_env
+                #
+                #     raise NotImplementedError("Fail environment action validity check!")
                 obs, reward, done, info = env.step(action_env)
+
+                # accumulation
                 actions.append(action)
                 rewards.append(reward)
                 episode_reward += reward
@@ -262,8 +276,10 @@ class PG(object):
             if t == 0:
                 start_date_batch = start_date
             else:
-                # start_date_batch = t * self.get_config("batch_size")
-                start_date_batch = 0
+                if self.get_config("batch_start_over"):
+                    start_date_batch = 0
+                else:
+                    start_date_batch = t * self.get_config("batch_size")
 
             # sample paths for current batch
             paths, total_rewards = self.sample_path(self._env, init_portfolio_batch, start_date_batch)
