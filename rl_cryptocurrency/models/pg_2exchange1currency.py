@@ -91,8 +91,9 @@ class PG2Exchange1Currency(PG):
 
         with tf.variable_scope("policy_sample"):
             # define variable log of std
+            # A good initialization is critical in speeding up training ...
             action_logits__logstd = tf.get_variable(name="log_std", shape=(1,), dtype=tf.float32,
-                                                    initializer=tf.constant_initializer(-5))
+                                                    initializer=tf.constant_initializer(-2.5))
             action_logits__std = tf.exp(action_logits__logstd, name="std")
             self._logstd = action_logits__logstd
 
@@ -119,7 +120,8 @@ class PG2Exchange1Currency(PG):
             self._sampled_action = truncated_sample
 
             # on the other hand, compute the probability given the action
-            self._logprob = gauss_kernel_nontruncated.log_prob(self._action_placeholder) - tf.log(cdf_high - cdf_low)
+            logprob = gauss_kernel_nontruncated.log_prob(self._action_placeholder) - tf.log(cdf_high - cdf_low)
+            self._logprob = tf.squeeze(logprob, axis=1)
 
         return self
 

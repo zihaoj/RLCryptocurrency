@@ -1,4 +1,5 @@
 import tensorflow as tf
+import time
 
 
 class config():
@@ -9,7 +10,7 @@ class config():
 
     record = False
     env_name = "rlcrptocurrency-v0"
-    output_path = "results/" + env_name +"" + "/"
+    output_path = "results/" + env_name + "/{:d}".format(int(time.time())) + "/"
     model_output = output_path + "model.weights/"
     log_path = output_path + "log.txt"
     plot_output = output_path + "scores.png"
@@ -19,12 +20,12 @@ class config():
 
     # model and training config
 
-    num_batches = 500  # number of batches trained on
+    num_batches = 400  # number of batches trained on
     batch_size = 1000  # number of steps used to compute each policy update
     max_ep_len = 100  # maximum episode length 1440 minutes = 1day
-    learning_rate = 1e-3
+    learning_rate = 1e-2
     gamma = 0.9  # the discount factor
-    use_baseline = False  # True
+    use_baseline = True
     normalize_advantage = True
 
     # parameters for the policy and baseline models
