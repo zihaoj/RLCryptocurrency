@@ -1,17 +1,12 @@
-import os
-import sys
 #import logging
-import time
 import numpy as np
 import tensorflow as tf
 import gym
 from gym_rlcrptocurrency.envs import Market
-import scipy.signal
 import os
-import time
 #import inspect
-from rl_cryptocurrency.utils.general import get_logger, Progbar, export_plot
-from config import config
+from rl_cryptocurrency.utils.general import get_logger, export_plot
+from rl_cryptocurrency.tests.config import config
 from datetime import timedelta, date
 
 

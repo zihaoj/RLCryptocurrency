@@ -3,7 +3,8 @@ from gym_rlcrptocurrency.envs import Market
 import numpy as np
 
 from rl_cryptocurrency.models.pg_basics import PG
-from rl_cryptocurrency.models.config import config
+from rl_cryptocurrency.models.pg_2exchange1currency import PG2Exchange1Currency
+from rl_cryptocurrency.tests.config import config
 
 
 # setup market data
@@ -25,10 +26,11 @@ init_portfolio = np.array(
     ],
     dtype=np.float64
 )
-start_date = "2017-1-1"
+start_date = "2015-3-1"
 
 # create model
-agent = PG(env, config).build().initialize()
+# agent = PG(env, config).build().initialize()
+agent = PG2Exchange1Currency(env, config).build().initialize()
 
 # training job
 agent = agent.train(init_portfolio, start_date)

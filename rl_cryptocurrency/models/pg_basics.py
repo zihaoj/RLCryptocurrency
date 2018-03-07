@@ -169,22 +169,30 @@ class PG(object):
         episode_rewards = []
         paths = []
 
-        pbar = tqdm(total=self.get_config("batch_size"), desc="Sampling mini-batch", disable=False)
+        pbar = tqdm(total=self.get_config("batch_size"), desc="Sampling one batch", disable=False)
 
         # loop over episodes
         while num_episodes or t < self.get_config("batch_size"):
             # initialization for current episode
-            if episode == 0:
-                obs, _, _, _ = env.init(init_portfolio, start_date)
-            else:
-                # TODO:
-                # init time searching in Market object is a bit time consuming
-                # thus, to save time, we operate on market time index directly
-                # here we are assuming the data is always in an interval of 1 minute
-
-                # we start a new episode following the last day of previous episode
+            if type(start_date) == int:
                 env.init(init_portfolio, None)
-                obs, _, _, _ = env.move_market(t)
+                obs, _, _, _ = env.move_market(start_date + t)
+            else:
+                if episode == 0:
+                    obs, _, _, _ = env.init(init_portfolio, start_date)
+                else:
+                    # TODO:
+                    # init time searching in Market object is a bit time consuming
+                    # thus, to save time, we operate on market time index directly
+                    # here we are assuming the data is always in an interval of 1 minute
+
+                    # we start a new episode following the last day of previous episode
+                    env.init(init_portfolio, None)
+                    obs, _, _, _ = env.move_market(t)
+
+            # print out current time, for checking
+            if t == 0:
+                print "\nCurrent time-stamp is:", env.get_time(), "\n"
 
             observations, actions, rewards = [], [], []
             episode_reward = 0
@@ -250,10 +258,12 @@ class PG(object):
 
         for t in range(self.get_config("num_batches")):
             # Initialization for each batch
-            # Notice that we shift by one day forward in each batch
             init_portfolio_batch = np.copy(init_portfolio)
-            # start_date_batch = pd.to_datetime(start_date) + pd.Timedelta(t, unit="d")
-            start_date_batch = pd.to_datetime(start_date)
+            if t == 0:
+                start_date_batch = start_date
+            else:
+                # start_date_batch = t * self.get_config("batch_size")
+                start_date_batch = 0
 
             # sample paths for current batch
             paths, total_rewards = self.sample_path(self._env, init_portfolio_batch, start_date_batch)
@@ -275,19 +285,20 @@ class PG(object):
                 self._update_baseline(returns, observations)
 
             # update policy network
-            self._sess.run(
-                self._train_op,
-                feed_dict={
-                    self._obs_placeholder: np.array(map(self._obs_transformer, observations)),
-                    self._action_placeholder: np.array(actions),
-                    self._advantage_placeholder: advantages,
-                }
-            )
+            _, grad_norm, loss = \
+                self._sess.run(
+                    [self._train_op, self._grad_norm, self._loss],
+                    feed_dict={
+                        self._obs_placeholder: np.array(map(self._obs_transformer, observations)),
+                        self._action_placeholder: np.array(actions),
+                        self._advantage_placeholder: advantages,
+                    }
+                )
 
             # tf stuff
             if t % self.get_config("summary_freq") == 0:
                 self._update_averages(total_rewards, scores_eval)
-                self._record_summary(t)
+                self._record_summary(t, grad_norm, loss)
 
             # compute reward statistics for this batch and log
             avg_reward = np.mean(total_rewards)
@@ -442,7 +453,13 @@ class PG(object):
         """
 
         with tf.variable_scope("policy_optimize"):
-            self._train_op = tf.train.AdamOptimizer(learning_rate=self.get_config("learning_rate")).minimize(self._loss)
+            optimizer = tf.train.AdamOptimizer(learning_rate=self.get_config("learning_rate"))
+            list_grad_and_var = optimizer.compute_gradients(self._loss)
+
+            list_grad, list_var = zip(*list_grad_and_var)
+            self._grad_norm = tf.global_norm(list_grad)
+
+            self._train_op = optimizer.apply_gradients(list_grad_and_var)
 
         return self
 
@@ -496,14 +513,17 @@ class PG(object):
         self._avg_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="avg_reward")
         self._max_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="max_reward")
         self._std_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="std_reward")
-
         self._eval_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="eval_reward")
+        self._grad_norm_placeholder = tf.placeholder(tf.float32, shape=(), name="grad_norm")
+        self._loss_placeholder = tf.placeholder(tf.float32, shape=(), name="loss")
 
         # extra summaries from python -> placeholders
         tf.summary.scalar("Avg Reward", self._avg_reward_placeholder)
         tf.summary.scalar("Max Reward", self._max_reward_placeholder)
         tf.summary.scalar("Std Reward", self._std_reward_placeholder)
         tf.summary.scalar("Eval Reward", self._eval_reward_placeholder)
+        tf.summary.scalar("Grad Norm", self._grad_norm_placeholder)
+        tf.summary.scalar("Loss", self._loss_placeholder)
 
         # logging
         self._merged = tf.summary.merge_all()
@@ -541,7 +561,7 @@ class PG(object):
         if len(scores_eval) > 0:
             self._eval_reward = scores_eval[-1]
 
-    def _record_summary(self, t):
+    def _record_summary(self, t, grad_norm, loss):
         """
         Add summary to tfboard
         :return: Self, for chaining
@@ -552,6 +572,8 @@ class PG(object):
             self._max_reward_placeholder: self._max_reward,
             self._std_reward_placeholder: self._std_reward,
             self._eval_reward_placeholder: self._eval_reward,
+            self._grad_norm_placeholder: grad_norm,
+            self._loss_placeholder: loss,
         }
         summary = self._sess.run(self._merged, feed_dict=fd)
         # tensorboard stuff
@@ -575,27 +597,27 @@ class PG(object):
 
         return np.concatenate((obs_portfolio.reshape((-1,)), obs_market.reshape((-1,)), obs_buffer.reshape((-1,))))
 
-    def _obs_transformer_inverse(self, obs):
-        """
-        Inverse of _obs_transformer
-
-        :param obs: Observation numpy array to be fed into policy network
-        :return: Observation numpy array as provided by environment
-        """
-
-        obs = np.copy(obs)
-
-        obs_portfolio = obs[:self._n_exchange * (self._n_currency + 1)]
-        obs_market = obs[self._n_exchange * (self._n_currency + 1):self._n_exchange * (self._n_currency + 1)+self._n_exchange * self._n_currency * self._d_market]
-        obs_buffer = obs[self._n_exchange * (self._n_currency + 1)+self._n_exchange * self._n_currency * self._d_market:self._n_exchange * (self._n_currency + 1)+self._n_exchange * self._n_currency * self._d_market+self._n_currency]
-
-        # we specify all dimensions explicitly
-        # so that error would be thrown out if input is incompatible
-        obs_portfolio = obs_portfolio.reshape((self._n_exchange, self._n_currency + 1))
-        obs_market = obs_market.reshape((self._n_exchange, self._n_currency, self._d_market))
-        obs_buffer = obs_buffer.reshape((self._n_currency,))
-
-        return obs_portfolio, obs_market, obs_buffer
+    # def _obs_transformer_inverse(self, obs):
+    #     """
+    #     Inverse of _obs_transformer
+    #
+    #     :param obs: Observation numpy array to be fed into policy network
+    #     :return: Observation numpy array as provided by environment
+    #     """
+    #
+    #     obs = np.copy(obs)
+    #
+    #     obs_portfolio = obs[:self._n_exchange * (self._n_currency + 1)]
+    #     obs_market = obs[self._n_exchange * (self._n_currency + 1):self._n_exchange * (self._n_currency + 1)+self._n_exchange * self._n_currency * self._d_market]
+    #     obs_buffer = obs[self._n_exchange * (self._n_currency + 1)+self._n_exchange * self._n_currency * self._d_market:self._n_exchange * (self._n_currency + 1)+self._n_exchange * self._n_currency * self._d_market+self._n_currency]
+    #
+    #     # we specify all dimensions explicitly
+    #     # so that error would be thrown out if input is incompatible
+    #     obs_portfolio = obs_portfolio.reshape((self._n_exchange, self._n_currency + 1))
+    #     obs_market = obs_market.reshape((self._n_exchange, self._n_currency, self._d_market))
+    #     obs_buffer = obs_buffer.reshape((self._n_currency,))
+    #
+    #     return obs_portfolio, obs_market, obs_buffer
 
     def _action_transformer(self, action, obs_env):
         """
