@@ -51,11 +51,17 @@ class PG2Exchange1Currency(PG):
             # # only price gap
             # obs_dimension = 1
 
-            # # price gap + portfolio + buffer
+            # # price gap + normalized portfolio + buffer
             # obs_dimension = 1 + self._n_exchange * (self._n_currency + 1) + self._n_currency
 
             # price gap + buffer
             obs_dimension = 1 + self._n_currency
+
+            # # all market info diff + normalized portfolio + buffer
+            # obs_dimension = self._d_market + self._n_exchange * (self._n_currency + 1) + self._n_currency
+
+            # # all market info diff + buffer
+            # obs_dimension = self._d_market + self._n_currency
 
             self._obs_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, obs_dimension),
                                                    name="obs_placeholder")
@@ -160,15 +166,37 @@ class PG2Exchange1Currency(PG):
         # more complete version: take all available information in!
         # return np.concatenate((obs_portfolio.reshape((-1,)), obs_market.reshape((-1,)), obs_buffer.reshape((-1,))))
 
-        # # price gap + portfolio + buffer
+        # # price gap + normalized portfolio + buffer
         # price_gap = obs_market[0, 0, self._price_index] - obs_market[1, 0, self._price_index]
         # price_gap = np.array([price_gap])
-        # return np.concatenate((price_gap, obs_portfolio.reshape((-1,)), obs_buffer.reshape(-1,)))
+        #
+        # obs_portfolio_scaled = np.copy(obs_portfolio)
+        # # TODO: initial money is hard-coded here
+        # obs_portfolio_scaled[:, 0] /= 10000.
+        # obs_portfolio_scaled[:, 1] /= 1.
+        #
+        # return np.concatenate((price_gap, obs_portfolio_scaled.reshape((-1,)), obs_buffer.reshape(-1,)))
 
         # price gap + buffer
         price_gap = obs_market[0, 0, self._price_index] - obs_market[1, 0, self._price_index]
         price_gap = np.array([price_gap])
         return np.concatenate((price_gap, obs_buffer.reshape(-1, )))
+
+        # # full market info diff + normalized portfolio + buffer
+        # market_diff = obs_market[0, 0, :] - obs_market[1, 0, :]
+        # assert market_diff.shape == (self._d_market,), "Wrong market_diff shape!"
+        #
+        # obs_portfolio_scaled = np.copy(obs_portfolio)
+        # # TODO: initial money is hard-coded here
+        # obs_portfolio_scaled[:, 0] /= 10000.
+        # obs_portfolio_scaled[:, 1] /= 1.
+        #
+        # return np.concatenate((market_diff, obs_portfolio_scaled.reshape((-1,)), obs_buffer.reshape(-1,)))
+
+        # # all market info diff + buffer
+        # market_diff = obs_market[0, 0, :] - obs_market[1, 0, :]
+        # assert market_diff.shape == (self._d_market,), "Wrong market_diff shape!"
+        # return np.concatenate((market_diff, obs_buffer.reshape(-1,)))
 
     def _action_transformer(self, action, obs_env):
         """

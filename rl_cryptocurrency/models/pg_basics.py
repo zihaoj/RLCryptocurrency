@@ -611,7 +611,6 @@ class PG(object):
     def _add_extra_summary(self):
         return self
 
-
     def _init_averages(self):
         """
         Defines extra attributes for tensorboard.

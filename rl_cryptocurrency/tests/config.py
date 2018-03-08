@@ -20,7 +20,7 @@ class config():
 
     # model and training config
 
-    num_batches = 300  # number of batches trained on
+    num_batches = 200  # number of batches trained on
     batch_size = 1000  # number of steps used to compute each policy update
     max_ep_len = 100  # maximum episode length 1440 minutes = 1day
     learning_rate = 1e-2  # default is 1e-3
@@ -30,9 +30,9 @@ class config():
 
     batch_start_over = True  # whether we start over again for each batch
 
-    decay_lr = True  # whether we use decaying learning rate; If true, then "learning_rate" will be the initial value
+    decay_lr = False  # whether we use decaying learning rate; If true, then "learning_rate" will be the initial value
     decay_rate = 0.63  # decay rate, only enabled if decay_lr is true
-    decay_steps = 40   # decay steps, only enabled if decay_lr is true
+    decay_steps = 60   # decay steps, only enabled if decay_lr is true
 
     # parameters for the policy and baseline models
 
