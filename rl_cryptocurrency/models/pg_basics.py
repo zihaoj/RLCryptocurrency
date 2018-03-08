@@ -487,13 +487,29 @@ class PG(object):
         """
 
         with tf.variable_scope("policy_optimize"):
-            optimizer = tf.train.AdamOptimizer(learning_rate=self.get_config("learning_rate"))
+            self._global_step_policy = tf.get_variable("global_step_policy", shape=(), dtype=tf.int32,
+                                                       initializer=tf.zeros_initializer,
+                                                       trainable=False)
+
+            if self.get_config("decay_lr"):
+                lr = tf.train.exponential_decay(
+                    self.get_config("learning_rate"),
+                    self._global_step_policy,
+                    self.get_config("decay_steps"),
+                    self.get_config("decay_rate"),
+                    staircase=True,
+                )
+                self._lr_policy = lr
+            else:
+                lr = self.get_config("learning_rate")
+
+            optimizer = tf.train.AdamOptimizer(learning_rate=lr)
             list_grad_and_var = optimizer.compute_gradients(self._loss)
 
             list_grad, list_var = zip(*list_grad_and_var)
             self._grad_norm = tf.global_norm(list_grad)
 
-            self._train_op = optimizer.apply_gradients(list_grad_and_var)
+            self._train_op = optimizer.apply_gradients(list_grad_and_var, global_step=self._global_step_policy)
 
         return self
 
@@ -527,8 +543,24 @@ class PG(object):
                 scope="baseline_loss",
             )
 
-            self._baseline_train_op = tf.train.AdamOptimizer(learning_rate=self.get_config("learning_rate"))\
-                .minimize(baseline_loss)
+            self._global_step_baseline = tf.get_variable("global_step_baseline", shape=(), dtype=tf.int32,
+                                                         initializer=tf.zeros_initializer,
+                                                         trainable=False)
+
+            if self.get_config("decay_lr"):
+                lr = tf.train.exponential_decay(
+                    self.get_config("learning_rate"),
+                    self._global_step_baseline,
+                    self.get_config("decay_steps"),
+                    self.get_config("decay_rate"),
+                    staircase=True,
+                )
+                self._lr_baseline = lr
+            else:
+                lr = self.get_config("learning_rate")
+
+            self._baseline_train_op = tf.train.AdamOptimizer(learning_rate=lr)\
+                .minimize(baseline_loss, global_step=self._global_step_baseline)
 
         return self
 
@@ -556,14 +588,29 @@ class PG(object):
         tf.summary.scalar("Max Reward", self._max_reward_placeholder)
         tf.summary.scalar("Std Reward", self._std_reward_placeholder)
         tf.summary.scalar("Eval Reward", self._eval_reward_placeholder)
+
+        # summaries for monitoring training
         tf.summary.scalar("Grad Norm", self._grad_norm_placeholder)
         tf.summary.scalar("Loss", self._loss_placeholder)
+        tf.summary.scalar("Global Step Policy", self._global_step_policy)
+        tf.summary.scalar("Global Step Baseline", self._global_step_baseline)
+
+        if self.get_config("decay_lr"):
+            tf.summary.scalar("Learning Rate Policy", self._lr_policy)
+            tf.summary.scalar("Learning Rate Baseline", self._lr_baseline)
+
+        # any extra summary that does not depends on inputs (typically parameters)
+        self._add_extra_summary()
 
         # logging
         self._merged = tf.summary.merge_all()
         self._file_writer = tf.summary.FileWriter(self.get_config("output_path"), self._sess.graph)
 
         return self
+
+    def _add_extra_summary(self):
+        return self
+
 
     def _init_averages(self):
         """

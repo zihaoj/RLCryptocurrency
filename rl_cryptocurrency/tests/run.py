@@ -15,11 +15,11 @@ markets = [
 ]
 
 # setup environment
-env = gym.make("rlcrptocurrency-v0").set_name("DefaultEnv")
+env = gym.make("rlcrptocurrency-v1").set_name("DefaultEnv")
 env.set_markets(markets)
 
 # setup reversed environment
-env_aux = gym.make("rlcrptocurrency-v0").set_name("ReverseEnv")
+env_aux = gym.make("rlcrptocurrency-v1").set_name("ReverseEnv")
 env_aux.set_markets(markets[::-1])
 
 # initialize environment

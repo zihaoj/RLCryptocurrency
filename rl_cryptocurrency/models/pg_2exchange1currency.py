@@ -47,9 +47,18 @@ class PG2Exchange1Currency(PG):
             # obs_dimension = self._n_exchange * (self._n_currency + 1)  # portfolio
             # obs_dimension += self._n_exchange * self._n_currency * self._d_market  # market info
             # obs_dimension += self._n_currency  # buffer
-            # self._obs_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, obs_dimension),
-            #                                        name="obs_placeholder")
-            self._obs_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, 1), name="obs_placeholder")
+
+            # # only price gap
+            # obs_dimension = 1
+
+            # # price gap + portfolio + buffer
+            # obs_dimension = 1 + self._n_exchange * (self._n_currency + 1) + self._n_currency
+
+            # price gap + buffer
+            obs_dimension = 1 + self._n_currency
+
+            self._obs_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, obs_dimension),
+                                                   name="obs_placeholder")
 
             # Action here refers to the one directly sampled out of distribution as parameterized by policy NN
             self._action_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, 1),
@@ -90,6 +99,7 @@ class PG2Exchange1Currency(PG):
             # A good initialization is critical in speeding up training ...
             action_logits__logstd = tf.get_variable(name="log_std", shape=(1,), dtype=tf.float32,
                                                     initializer=tf.constant_initializer(-2.5))
+                                                    # initializer=tf.constant_initializer(-0.693))
             action_logits__std = tf.exp(action_logits__logstd, name="std")
             self._logstd = action_logits__logstd
 
@@ -125,36 +135,8 @@ class PG2Exchange1Currency(PG):
     # TensorBoard Stuffs #
     ######################
 
-    def _add_summary(self):
-        """
-        Tensorboard stuff.
-
-        :return Self, for chaining
-        """
-
-        # extra placeholders to log stuff from python
-        self._avg_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="avg_reward")
-        self._max_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="max_reward")
-        self._std_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="std_reward")
-        self._eval_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="eval_reward")
-        self._grad_norm_placeholder = tf.placeholder(tf.float32, shape=(), name="grad_norm")
-        self._loss_placeholder = tf.placeholder(tf.float32, shape=(), name="loss")
-
-        # extra summaries from python -> placeholders
-        tf.summary.scalar("Avg Reward", self._avg_reward_placeholder)
-        tf.summary.scalar("Max Reward", self._max_reward_placeholder)
-        tf.summary.scalar("Std Reward", self._std_reward_placeholder)
-        tf.summary.scalar("Eval Reward", self._eval_reward_placeholder)
-        tf.summary.scalar("Grad Norm", self._grad_norm_placeholder)
-        tf.summary.scalar("Loss", self._loss_placeholder)
-
-        # Parameters
+    def _add_extra_summary(self):
         tf.summary.scalar("Param Std", tf.reshape(tf.exp(self._logstd), shape=()))
-
-        # logging
-        self._merged = tf.summary.merge_all()
-        self._file_writer = tf.summary.FileWriter(self.get_config("output_path"), self._sess.graph)
-
         return self
 
     #########
@@ -172,11 +154,21 @@ class PG2Exchange1Currency(PG):
         obs_portfolio, obs_market, obs_buffer = obs_env
 
         # a simplified version: just look at price gap
-        price_gap = obs_market[0, 0, self._price_index] - obs_market[1, 0, self._price_index]
-        return np.array([price_gap])
+        # price_gap = obs_market[0, 0, self._price_index] - obs_market[1, 0, self._price_index]
+        # return np.array([price_gap])
 
         # more complete version: take all available information in!
         # return np.concatenate((obs_portfolio.reshape((-1,)), obs_market.reshape((-1,)), obs_buffer.reshape((-1,))))
+
+        # # price gap + portfolio + buffer
+        # price_gap = obs_market[0, 0, self._price_index] - obs_market[1, 0, self._price_index]
+        # price_gap = np.array([price_gap])
+        # return np.concatenate((price_gap, obs_portfolio.reshape((-1,)), obs_buffer.reshape(-1,)))
+
+        # price gap + buffer
+        price_gap = obs_market[0, 0, self._price_index] - obs_market[1, 0, self._price_index]
+        price_gap = np.array([price_gap])
+        return np.concatenate((price_gap, obs_buffer.reshape(-1, )))
 
     def _action_transformer(self, action, obs_env):
         """
