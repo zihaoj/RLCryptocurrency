@@ -6,6 +6,7 @@ import tensorflow as tf
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from copy import deepcopy
 
 
 class PGOptimalStop(PGBase):
@@ -134,9 +135,21 @@ class PGOptimalStop(PGBase):
             # loop through batches
             # one batch is the most basic unit corresponding to one parameter update
             for batch in train_batches:
+
+                batch_split = []
                 for env in env_list:
                     paths, total_rewards = \
                         self.sample_path(env, init_portfolio, 0, max_ep_len=max_ep_len, loop_list=batch)
+                    batch_split.append({"paths": paths, "total_rewards": total_rewards})
+
+                if self.get_config("mix_reverse"):
+                    paths_mix = reduce(lambda x, y: x + y, map(lambda x: x["paths"], batch_split))
+                    total_rewards_mix = reduce(lambda x, y: x + y, map(lambda x: x["total_rewards"], batch_split))
+                    batch_split = [{"paths": paths_mix, "total_rewards": total_rewards_mix}]
+
+                for batch_actual in batch_split:
+                    paths = batch_actual["paths"]
+                    total_rewards = batch_actual["total_rewards"]
 
                     # update evaluation score
                     scores_eval += total_rewards
@@ -164,30 +177,42 @@ class PGOptimalStop(PGBase):
                             }
                         )
 
-                    # tf stuff
-                    if counter % self.get_config("summary_freq") == 0:
-                        self._update_averages(total_rewards, scores_eval)
-                        self._record_summary(counter, grad_norm, loss)
-
-                    # compute reward statistics for this batch and log
+                    # compute reward statistics for each batch and log
                     avg_reward = np.mean(total_rewards)
                     sigma_reward = np.sqrt(np.var(total_rewards) / len(total_rewards))
                     msg = "Average reward: {:04.2f} +/- {:04.2f}".format(avg_reward, sigma_reward)
                     self._logger.info(msg)
 
+                    # perform independent evaluation and record it
+                    if counter % self.get_config("eval_freq") == 0:
+
+                        self._logger.info("\n===> Evaluation ... <===\n")
+
+                        for env_eval in env_eval_list:
+                            self._logger.info("Evaluating on environment {:s}".format(env_eval.name))
+                            env_eval.init(init_portfolio, None)
+                            eval_result = self.evaluate(env_eval, 7 * 1440)  # TODO: hard-coded, run for 7-days as test
+                            self._logger.info(
+                                "Accumulated return is {:.4f}".format(eval_result["accumulated_reward"][-1]))
+                            self._logger.info("\n")
+
+                            # TODO: also quite hard-coded here
+                            if env_eval.name == "EvalEnvDefault":
+                                self._eval_accum_reward_default_cache = eval_result["accumulated_reward"][-1]
+                            elif env_eval.name == "EvalEnvReverse":
+                                self._eval_accum_reward_reverse_cache = eval_result["accumulated_reward"][-1]
+                            else:
+                                raise NotImplementedError("How do you turn this on?!")
+
+                    # Tensorboard for each batch
+                    self._update_averages(total_rewards, scores_eval)
+                    self._record_summary(counter, grad_norm, loss, fd_extra={
+                        self._eval_accum_reward_default: self._eval_accum_reward_default_cache,
+                        self._eval_accum_reward_reverse: self._eval_accum_reward_reverse_cache,
+                    })
+
                     # update counter
                     counter += 1
-
-                if counter % self.get_config("eval_freq") == 0:
-                    # perform one evaluation at end of one epoch
-                    self._logger.info("\n===> Evaluation ... <===\n")
-
-                    for env_eval in env_eval_list:
-                        self._logger.info("Evaluating on environment {:s}".format(env_eval.name))
-                        env_eval.init(init_portfolio, None)
-                        real_eval_score = self.evaluate(env_eval, 7*1440)  # TODO: hard-coded, run for 7-days as test
-                        self._logger.info("Accumulated return is {:.4f}".format(real_eval_score["accumulated_reward"][-1]))
-                        self._logger.info("\n")
 
         # finish training
         self._logger.info("- Training done.")
@@ -330,27 +355,32 @@ class PGOptimalStop(PGBase):
     def _transform_action(self, action, obs_env):
         """
         If action is 1, then we all in, otherwise, do nothing
+        Notice that "action" here has been reduced to the purchase at exchange-0
         """
 
         # get observation from environment
         obs_portfolio, obs_market, _ = obs_env
         price_matrix = obs_market[:, :, self._price_index]
 
-        # obtain the bound
-        if action >= 0:
-            price_adjusted = price_matrix[0, 0] / ((1. - self._fee_exchange) * (1. - self._fee_transfer))
-            bound = np.min((obs_portfolio[1, 1], obs_portfolio[0, 0] / price_adjusted))
-        else:
-            price_adjusted = price_matrix[1, 0] / ((1. - self._fee_exchange) * (1. - self._fee_transfer))
-            bound = np.min((obs_portfolio[0, 1], obs_portfolio[1, 0] / price_adjusted))
-
+        # obtain actual purchase action
+        # notice that we decide whether to buy/sell based on a simple price gap, without adjustment from fees
+        # this might lead to a situation, in particular if purchase amount is small, that price gap gets flipped
+        # after fee is taken into account.
+        # from algorithm performance point of view this is fine though, since the agent should learn that in this case
+        # no action should be taken instead of taking the seemly price gap
         if action == 1:
-            action_final = 0.95
+            if price_matrix[0, 0] < price_matrix[1, 0]:
+                price_adjusted = price_matrix[0, 0] / ((1. - self._fee_exchange) * (1. - self._fee_transfer))
+                bound = np.min((obs_portfolio[1, 1], obs_portfolio[0, 0] / price_adjusted))
+                action_final = 0.95 * bound
+            else:
+                price_adjusted = price_matrix[1, 0] / ((1. - self._fee_exchange) * (1. - self._fee_transfer))
+                bound = np.min((obs_portfolio[0, 1], obs_portfolio[1, 0] / price_adjusted))
+                action_final = -0.95 * bound
         else:
             action_final = 0.
 
         # get purchase matrix
-        action_final = action_final * bound
         purchase_matrix = np.array([[action_final], [-action_final]])
 
         # next, we derive the transfer matrix based on purchase matrix
@@ -437,12 +467,13 @@ class PGOptimalStop(PGBase):
 
         return output
 
+    def _add_extra_summary(self):
+        self._eval_accum_reward_default = tf.placeholder(tf.float32, shape=(), name="eval_accum_reward_default")
+        self._eval_accum_reward_reverse = tf.placeholder(tf.float32, shape=(), name="eval_accum_reward_reverse")
 
+        tf.summary.scalar("Eval Accum Reward Default", self._eval_accum_reward_default)
+        tf.summary.scalar("Eval Accum Reward Reverse", self._eval_accum_reward_reverse)
 
-
-
-
-
-
-
+        self._eval_accum_reward_default_cache = 0.
+        self._eval_accum_reward_reverse_cache = 0.
 

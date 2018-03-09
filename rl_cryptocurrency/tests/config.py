@@ -14,8 +14,8 @@ class config():
     log_path = output_path + "log.txt"
     plot_output = output_path + "scores.png"
     record_path = output_path
-    record_freq = 5
-    summary_freq = 1
+    # record_freq = 5
+    # summary_freq = 1
 
     # training config
 
@@ -23,11 +23,12 @@ class config():
     batch_size = 32
     num_epoch = 10
     max_ep_len = 10  # 10 minute
+    mix_reverse = True  # whether we mix reversed episode with normal one into the same batch
 
     gamma = 1.0
-    learning_rate = 1e-2
+    learning_rate = 5e-3
 
-    eval_freq = 50
+    eval_freq = 100
 
     # policy network config
     n_layers = 1

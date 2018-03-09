@@ -330,7 +330,7 @@ class PGBase(object):
         if len(scores_eval) > 0:
             self._eval_reward = scores_eval[-1]
 
-    def _record_summary(self, t, grad_norm, loss):
+    def _record_summary(self, t, grad_norm, loss, fd_extra={}):
         """
         Add summary to tfboard
         :return: Self, for chaining
@@ -344,6 +344,9 @@ class PGBase(object):
             self._grad_norm_placeholder: grad_norm,
             self._loss_placeholder: loss,
         }
+        for key, value in fd_extra.items():
+            fd[key] = value
+
         summary = self._sess.run(self._merged, feed_dict=fd)
         # tensorboard stuff
         self._file_writer.add_summary(summary, t)
