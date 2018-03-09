@@ -8,8 +8,7 @@ class config():
 
     # output config
 
-    record = False
-    env_name = "rlcrptocurrency-v0"
+    env_name = "rlcrptocurrency-v1"
     output_path = "results/" + env_name + "/{:d}".format(int(time.time())) + "/"
     model_output = output_path + "model.weights/"
     log_path = output_path + "log.txt"
@@ -18,30 +17,23 @@ class config():
     record_freq = 5
     summary_freq = 1
 
-    # model and training config
+    # training config
 
-    num_batches = 200  # number of batches trained on
-    batch_size = 1000  # number of steps used to compute each policy update
-    max_ep_len = 100  # maximum episode length 1440 minutes = 1day
-    learning_rate = 1e-2  # default is 1e-3
-    gamma = 0.99  # the discount factor
-    use_baseline = True
-    normalize_advantage = True
+    train_size = 12960  # 3 month
+    batch_size = 32
+    num_epoch = 10
+    max_ep_len = 10  # 10 minute
 
-    batch_start_over = True  # whether we start over again for each batch
+    gamma = 1.0
+    learning_rate = 1e-2
 
-    decay_lr = False  # whether we use decaying learning rate; If true, then "learning_rate" will be the initial value
-    decay_rate = 0.63  # decay rate, only enabled if decay_lr is true
-    decay_steps = 60   # decay steps, only enabled if decay_lr is true
+    eval_freq = 50
 
-    # parameters for the policy and baseline models
-
+    # policy network config
     n_layers = 1
     layer_size = 64
     activation = staticmethod(tf.nn.leaky_relu)
 
-    # since we start new episodes for each batch
-
-    assert max_ep_len <= batch_size
-    if max_ep_len < 0:
-        max_ep_len = batch_size
+    # baseline config
+    use_baseline = True
+    normalize_advantage = True
