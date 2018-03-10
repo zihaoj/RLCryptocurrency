@@ -50,13 +50,13 @@ class PGOptimalStopMoreFeatures(PGOptimalStop):
 
         return self
 
-    def _transform_obs(self, obs_env):
+    def _transform_obs(self, obs_env_buffer):
         """
         Now we also add other information of current time-stamp
         Notice that no buffer information should be used, since in the training time there will be no buffer at all
         """
 
-        _, obs_market, _ = obs_env
+        _, obs_market, _ = obs_env_buffer[-1]
 
         # # trial 1: simply dump all information
         # # FAIL

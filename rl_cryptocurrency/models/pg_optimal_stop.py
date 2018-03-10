@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from copy import deepcopy
+from collections import deque
 
 
 class PGOptimalStop(PGBase):
@@ -32,6 +33,8 @@ class PGOptimalStop(PGBase):
         max_ep_len = options["max_ep_len"]
         # List of integer, indicating the list of first time-stamp for each episode wrt start_date
         loop_list = options["loop_list"]
+        # buffer max length
+        max_buffer_len = self.get_config("rnn_maxlen")
 
         # Initialize environment
         # t_init is the time-stamp w.r.t market reset index
@@ -48,22 +51,33 @@ class PGOptimalStop(PGBase):
         for t in loop_list:
             # reset environment
             env.init(init_portfolio, None)
-            obs, _, _, _ = env.move_market(t_init + t)
+            env.move_market(t_init + t)
 
             # unroll the episode
             observations, actions, rewards = [], [], []
             episode_reward = 0
             count = 0
 
+            # initialize the history buffer with maxlen - 1 time-stamps before starting point
+            observations_buffer = deque(maxlen=max_buffer_len)
+            observations_buffer_list = []
+
+            obs, _, _, _ = env.move_market(-max_buffer_len+1)
+            for _ in range(max_buffer_len - 1):
+                observations_buffer.append(obs)
+                obs, _, _, _ = env.move_market(1)
+
             while count < max_ep_len:
                 # current observation
+                observations_buffer.append(obs)
+                observations_buffer_list.append(list(observations_buffer))
                 observations.append(obs)
 
                 # sample an action
                 action = self._sess.run(
                     self._sampled_action,
                     feed_dict={
-                        self._obs_placeholder: self._transform_obs(obs)[None],
+                        self._obs_placeholder: self._transform_obs(observations_buffer)[None],
                         self._is_training_placeholder: False,
                     }
                 )[0]
@@ -93,6 +107,7 @@ class PGOptimalStop(PGBase):
             # prepare episode
             path = {
                 "observations": observations,
+                "observations_buffer_list": observations_buffer_list,
                 "actions": actions,
                 "rewards": rewards,
             }
@@ -158,7 +173,8 @@ class PGOptimalStop(PGBase):
                     scores_eval += total_rewards
 
                     # concatenate all episodes to 1-D array
-                    observations = reduce(lambda x, y: x + y, map(lambda path: path["observations"], paths))
+                    # notice that each element in observations is a buffer list
+                    observations = reduce(lambda x, y: x + y, map(lambda path: path["observations_buffer_list"], paths))
                     actions = reduce(lambda x, y: x + y, map(lambda path: path["actions"], paths))
 
                     # get advantage
@@ -249,20 +265,31 @@ class PGOptimalStop(PGBase):
         Instead of using sample_path(), we do the normal simulation to test return for a pre-defined period of time
         """
 
-        obs = env.get_observation()
-
+        # initialization
         counter = 0
         reward_list = []
         accumulated_reward_list = [0.]
 
+        # initialize buffer
+        max_buffer_len = self.get_config("rnn_maxlen")
+        observations_buffer = deque(maxlen=max_buffer_len)
+
+        obs, _, _, _ = env.move_market(-max_buffer_len + 1)
+        for _ in range(max_buffer_len - 1):
+            observations_buffer.append(obs)
+            obs, _, _, _ = env.move_market(1)
+
         pbar = tqdm(total=n, desc="Loop over time-stamps")
 
         while counter < n:
+            # fill in current obs
+            observations_buffer.append(obs)
+
             # sample an action
             action = self._sess.run(
                 self._sampled_action,
                 feed_dict={
-                    self._obs_placeholder: self._transform_obs(obs)[None],
+                    self._obs_placeholder: self._transform_obs(observations_buffer)[None],
                     self._is_training_placeholder: False,
                 }
             )[0]
@@ -313,7 +340,7 @@ class PGOptimalStop(PGBase):
                     activation_fn=self.get_config("activation"),
                     scope="layer_{:d}".format(layer)
                 )
-                if self.get_config("batch_norm"):
+                if self.get_config("batch_norm_policy"):
                     net = tf.layers.batch_normalization(net, training=self._is_training_placeholder,
                                                         name="layer_{:d}_batch_norm".format(layer))
 
@@ -354,9 +381,9 @@ class PGOptimalStop(PGBase):
                     activation_fn=self.get_config("activation"),
                     scope="layer_{:d}".format(layer)
                 )
-                # Experiment shows that batch normalization on baseline network is not good.
-                # net = tf.layers.batch_normalization(net, training=self._is_training_placeholder,
-                #                                     name="layer_{:d}_batch_norm".format(layer))
+                if self.get_config("batch_norm_baseline"):
+                    net = tf.layers.batch_normalization(net, training=self._is_training_placeholder,
+                                                        name="layer_{:d}_batch_norm".format(layer))
 
             baseline = tf.contrib.layers.fully_connected(
                 inputs=net,
@@ -424,12 +451,14 @@ class PGOptimalStop(PGBase):
 
         return adv
 
-    def _transform_obs(self, obs_env):
+    def _transform_obs(self, obs_env_buffer):
         """
-        Basic version: just price gap
+        Notice that input is a buffer list of obs env
+
+        Basic version: just price gap of current time-stamp
         """
 
-        obs_portfolio, obs_market, _ = obs_env
+        _, obs_market, _ = obs_env_buffer[-1]
         price_gap = obs_market[0, 0, self._price_index] - obs_market[1, 0, self._price_index]
 
         return np.array([price_gap])
@@ -438,6 +467,8 @@ class PGOptimalStop(PGBase):
         """
         If action is 1, then we all in, otherwise, do nothing
         Notice that "action" here has been reduced to the purchase at exchange-0
+        Also notice that obs_env here is just the current observation as returned by environment, because this obs is only
+        for constraint purpose.
         """
 
         # get observation from environment

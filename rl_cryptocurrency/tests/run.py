@@ -2,7 +2,8 @@ import gym
 from gym_rlcrptocurrency.envs import Market
 import numpy as np
 
-from rl_cryptocurrency.models.pg_optimal_stop_more_features import PGOptimalStopMoreFeatures
+# from rl_cryptocurrency.models.pg_optimal_stop_more_features import PGOptimalStopMoreFeatures
+from rl_cryptocurrency.models.pg_optimal_stop_rnn import PGOptimalStopRNN
 from rl_cryptocurrency.tests.config import config
 
 # training / evaluation period
@@ -51,7 +52,8 @@ env_eval_reverse.set_markets([[Market(markets[1])], [Market(markets[0])]]).init(
 env_eval_reverse.debug = True
 
 # create model
-agent = PGOptimalStopMoreFeatures(env, env_aux, config).build().initialize()
+# agent = PGOptimalStopMoreFeatures(env, env_aux, config).build().initialize()
+agent = PGOptimalStopRNN(env, env_aux, config).build().initialize()
 
 # training job
 agent = agent.train(init_portfolio, train_start_date, end_date=train_end_date,
