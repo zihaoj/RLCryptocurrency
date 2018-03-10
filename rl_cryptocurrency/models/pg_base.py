@@ -405,52 +405,23 @@ class PGBase(object):
         """
         Calculate the advantage using current baseline network
 
-        Expecting self._baseline and self._obs_placeholder
-
         :param returns: 1-D numpy array of returns for each time-step
         :param observations: List of observations for each time-step
         :return 1-D numpy array of advantages for each time-step
         """
 
-        adv = returns
-
-        if self.get_config("use_baseline"):
-            baselines = self._sess.run(
-                self._baseline,
-                feed_dict={
-                    self._obs_placeholder: np.array(map(self._transform_obs, observations)),
-                }
-            )
-            adv = returns - baselines
-
-        if self.get_config("normalize_advantage"):
-            mean = np.mean(adv)
-            std = np.std(adv)
-            adv = (adv - mean) / std
-
-        return adv
+        raise NotImplementedError("Please implement this in your sub-class")
 
     def _update_baseline(self, returns, observations):
         """
         Update the baseline network
-
-        Expecting self._obs_placeholder, self._baseline_target_placeholder, self._baseline_train_op, self._baseline_loss
 
         :param returns: 1-D numpy array of returns for each time-step
         :param observations: List of observations for each time-step
         :return Self, for chaining
         """
 
-        _, baseline_loss = \
-            self._sess.run(
-                [self._baseline_train_op, self._baseline_loss],
-                feed_dict={
-                    self._obs_placeholder: np.array(map(self._transform_obs, observations)),
-                    self._baseline_target_placeholder: returns,
-                }
-            )
-
-        return baseline_loss
+        raise NotImplementedError("Please implement this in your sub-class!")
 
 
 

@@ -36,6 +36,8 @@ class config():
     activation = staticmethod(tf.nn.leaky_relu)
     # activation = staticmethod(tf.nn.tanh)
 
+    batch_norm = True   # Whether we apply batch normalization on policy network.
+
     # baseline config
     use_baseline = True
     normalize_advantage = True

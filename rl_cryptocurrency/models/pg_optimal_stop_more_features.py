@@ -46,6 +46,8 @@ class PGOptimalStopMoreFeatures(PGOptimalStop):
             self._advantage_placeholder = tf.placeholder(dtype=tf.float32, shape=(None,),
                                                          name="advantage_placeholder")
 
+            self._is_training_placeholder = tf.placeholder(tf.bool, shape=(), name="is_training_placeholder")
+
         return self
 
     def _transform_obs(self, obs_env):

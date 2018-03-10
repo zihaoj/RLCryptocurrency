@@ -62,7 +62,10 @@ class PGOptimalStop(PGBase):
                 # sample an action
                 action = self._sess.run(
                     self._sampled_action,
-                    feed_dict={self._obs_placeholder: self._transform_obs(obs)[None]}
+                    feed_dict={
+                        self._obs_placeholder: self._transform_obs(obs)[None],
+                        self._is_training_placeholder: False,
+                    }
                 )[0]
                 actions.append(action)
 
@@ -165,6 +168,8 @@ class PGOptimalStop(PGBase):
                     # update baseline network, if applicable
                     if self.get_config("use_baseline"):
                         baseline_loss = self._update_baseline(returns, observations)
+                    else:
+                        baseline_loss = None
 
                     # update policy network
                     # DEBUG -- self._logprob
@@ -175,6 +180,7 @@ class PGOptimalStop(PGBase):
                                 self._obs_placeholder: np.array(map(self._transform_obs, observations)),
                                 self._action_placeholder: np.array(actions),
                                 self._advantage_placeholder: advantages,
+                                self._is_training_placeholder: True,
                             }
                         )
                     
@@ -255,7 +261,10 @@ class PGOptimalStop(PGBase):
             # sample an action
             action = self._sess.run(
                 self._sampled_action,
-                feed_dict={self._obs_placeholder: self._transform_obs(obs)[None]}
+                feed_dict={
+                    self._obs_placeholder: self._transform_obs(obs)[None],
+                    self._is_training_placeholder: False,
+                }
             )[0]
 
             obs, reward, _, _ = env.step(self._transform_action(action, obs))
@@ -286,6 +295,8 @@ class PGOptimalStop(PGBase):
             self._advantage_placeholder = tf.placeholder(dtype=tf.float32, shape=(None,),
                                                          name="advantage_placeholder")
 
+            self._is_training_placeholder = tf.placeholder(tf.bool, shape=(), name="is_training_placeholder")
+
         return self
 
     def _build_policy_network_op(self):
@@ -302,6 +313,10 @@ class PGOptimalStop(PGBase):
                     activation_fn=self.get_config("activation"),
                     scope="layer_{:d}".format(layer)
                 )
+                if self.get_config("batch_norm"):
+                    net = tf.layers.batch_normalization(net, training=self._is_training_placeholder,
+                                                        name="layer_{:d}_batch_norm".format(layer))
+
             logits = tf.contrib.layers.fully_connected(
                 inputs=net,
                 num_outputs=2,
@@ -339,6 +354,10 @@ class PGOptimalStop(PGBase):
                     activation_fn=self.get_config("activation"),
                     scope="layer_{:d}".format(layer)
                 )
+                # Experiment shows that batch normalization on baseline network is not good.
+                # net = tf.layers.batch_normalization(net, training=self._is_training_placeholder,
+                #                                     name="layer_{:d}_batch_norm".format(layer))
+
             baseline = tf.contrib.layers.fully_connected(
                 inputs=net,
                 num_outputs=1,
@@ -362,6 +381,48 @@ class PGOptimalStop(PGBase):
             self._baseline_train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(baseline_loss)
 
         return self
+
+    def _update_baseline(self, returns, observations):
+        """
+        Expecting self._obs_placeholder, self._baseline_target_placeholder, self._baseline_train_op, self._baseline_loss
+        self._is_training_placeholder
+        """
+
+        _, baseline_loss = \
+            self._sess.run(
+                [self._baseline_train_op, self._baseline_loss],
+                feed_dict={
+                    self._obs_placeholder: np.array(map(self._transform_obs, observations)),
+                    self._baseline_target_placeholder: returns,
+                    self._is_training_placeholder: True,
+                }
+            )
+
+        return baseline_loss
+
+    def _calculate_advantage(self, returns, observations):
+        """
+        Expecting self._baseline and self._obs_placeholder
+        """
+
+        adv = returns
+
+        if self.get_config("use_baseline"):
+            baselines = self._sess.run(
+                self._baseline,
+                feed_dict={
+                    self._obs_placeholder: np.array(map(self._transform_obs, observations)),
+                    self._is_training_placeholder: False,
+                }
+            )
+            adv = returns - baselines
+
+        if self.get_config("normalize_advantage"):
+            mean = np.mean(adv)
+            std = np.std(adv)
+            adv = (adv - mean) / std
+
+        return adv
 
     def _transform_obs(self, obs_env):
         """
