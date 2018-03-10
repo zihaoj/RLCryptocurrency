@@ -434,22 +434,23 @@ class PGBase(object):
         """
         Update the baseline network
 
-        Expecting self._obs_placeholder, self._baseline_target_placeholder, self._baseline_train_op
+        Expecting self._obs_placeholder, self._baseline_target_placeholder, self._baseline_train_op, self._baseline_loss
 
         :param returns: 1-D numpy array of returns for each time-step
         :param observations: List of observations for each time-step
         :return Self, for chaining
         """
 
-        self._sess.run(
-            self._baseline_train_op,
-            feed_dict={
-                self._obs_placeholder: np.array(map(self._transform_obs, observations)),
-                self._baseline_target_placeholder: returns,
-            }
-        )
+        _, baseline_loss = \
+            self._sess.run(
+                [self._baseline_train_op, self._baseline_loss],
+                feed_dict={
+                    self._obs_placeholder: np.array(map(self._transform_obs, observations)),
+                    self._baseline_target_placeholder: returns,
+                }
+            )
 
-        return self
+        return baseline_loss
 
 
 

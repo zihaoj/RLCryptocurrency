@@ -164,18 +164,34 @@ class PGOptimalStop(PGBase):
 
                     # update baseline network, if applicable
                     if self.get_config("use_baseline"):
-                        self._update_baseline(returns, observations)
+                        baseline_loss = self._update_baseline(returns, observations)
 
                     # update policy network
+                    # DEBUG -- self._logprob
                     _, grad_norm, loss = \
                         self._sess.run(
-                            [self._train_op, self._grad_norm, self._loss],
+                            [self._train_op, self._grad_norm, self._loss],  #, self._logprob],
                             feed_dict={
                                 self._obs_placeholder: np.array(map(self._transform_obs, observations)),
                                 self._action_placeholder: np.array(actions),
                                 self._advantage_placeholder: advantages,
                             }
                         )
+                    
+                    # # DEBUG
+                    # print "=======>"
+                    # print "shape of logprob:", logprob.shape
+                    # print "mean of logprob:", np.mean(logprob)
+                    # print "min of logprob:", np.min(logprob)
+                    # print "max of logprob:", np.max(logprob)
+                    # print "std of logprob:", np.std(logprob)
+                    #
+                    # print "shape of advantages:", advantages.shape
+                    # print "mean of advantages:", np.mean(advantages)
+                    # print "min of advantages:", np.min(advantages)
+                    # print "max of advantages:", np.max(advantages)
+                    # print "std of advantages:", np.std(advantages)
+                    # print "========>"
 
                     # compute reward statistics for each batch and log
                     avg_reward = np.mean(total_rewards)
@@ -206,10 +222,14 @@ class PGOptimalStop(PGBase):
 
                     # Tensorboard for each batch
                     self._update_averages(total_rewards, scores_eval)
-                    self._record_summary(counter, grad_norm, loss, fd_extra={
-                        self._eval_accum_reward_default: self._eval_accum_reward_default_cache,
-                        self._eval_accum_reward_reverse: self._eval_accum_reward_reverse_cache,
-                    })
+
+                    feed_extra = {
+                        self._eval_accum_reward_default_placeholder: self._eval_accum_reward_default_cache,
+                        self._eval_accum_reward_reverse_placeholder: self._eval_accum_reward_reverse_cache,
+                    }
+                    if self.get_config("use_baseline"):
+                        feed_extra[self._tf_baseline_loss_placeholder] = baseline_loss
+                    self._record_summary(counter, grad_norm, loss, fd_extra=feed_extra)
 
                     # update counter
                     counter += 1
@@ -336,6 +356,7 @@ class PGOptimalStop(PGBase):
                 predictions=self._baseline,
                 scope="baseline_loss",
             )
+            self._baseline_loss = baseline_loss   # cache for tensorboard
 
             lr = self.get_config("learning_rate")
             self._baseline_train_op = tf.train.AdamOptimizer(learning_rate=lr).minimize(baseline_loss)
@@ -468,12 +489,22 @@ class PGOptimalStop(PGBase):
         return output
 
     def _add_extra_summary(self):
-        self._eval_accum_reward_default = tf.placeholder(tf.float32, shape=(), name="eval_accum_reward_default")
-        self._eval_accum_reward_reverse = tf.placeholder(tf.float32, shape=(), name="eval_accum_reward_reverse")
+        # evaluation scores
 
-        tf.summary.scalar("Eval Accum Reward Default", self._eval_accum_reward_default)
-        tf.summary.scalar("Eval Accum Reward Reverse", self._eval_accum_reward_reverse)
+        self._eval_accum_reward_default_placeholder = \
+            tf.placeholder(tf.float32, shape=(), name="eval_accum_reward_default_placeholder")
+        self._eval_accum_reward_reverse_placeholder = \
+            tf.placeholder(tf.float32, shape=(), name="eval_accum_reward_reverse_placeholder")
+
+        tf.summary.scalar("Eval Accum Reward Default", self._eval_accum_reward_default_placeholder)
+        tf.summary.scalar("Eval Accum Reward Reverse", self._eval_accum_reward_reverse_placeholder)
 
         self._eval_accum_reward_default_cache = 0.
         self._eval_accum_reward_reverse_cache = 0.
+
+        # baseline loss
+        if self.get_config("use_baseline"):
+            self._tf_baseline_loss_placeholder = tf.placeholder(tf.float32, shape=(),
+                                                                name="tf_baseline_loss_placeholder")
+            tf.summary.scalar("Baseline Loss", self._tf_baseline_loss_placeholder)
 

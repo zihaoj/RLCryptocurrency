@@ -32,8 +32,9 @@ class config():
 
     # policy network config
     n_layers = 1
-    layer_size = 64
+    layer_size = 32
     activation = staticmethod(tf.nn.leaky_relu)
+    # activation = staticmethod(tf.nn.tanh)
 
     # baseline config
     use_baseline = True
