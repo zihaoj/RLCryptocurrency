@@ -6,6 +6,7 @@ import dill
 
 from rl_cryptocurrency.models.pg_optimal_stop_more_features import PGOptimalStopMoreFeatures
 from rl_cryptocurrency.models.pg_optimal_stop_rnn import PGOptimalStopRNN
+from rl_cryptocurrency.models.pg_optimal_stop_replay import PGOptimalStopReplay
 from rl_cryptocurrency.tests.config import Config
 
 
@@ -21,17 +22,18 @@ def main(args):
 
     train_start_date = "2017-8-1"
     train_end_date = "2017-11-1"
-    # eval_start_date = "2017-12-5"
-    eval_start_date = "2017-11-15"
-    # eval_start_date = "2017-11-5"
+    # eval_start_date = "2017-11-5"     # validation
+    # eval_start_date = "2017-11-15"  # evaluation 1
+    # eval_start_date = "2017-12-1"   # evaluation 2
+    eval_start_date = args.eval_date
 
     # choose what model to use #
 
-    model_class = PGOptimalStopMoreFeatures
+    model_class = PGOptimalStopReplay
 
     # setup market data #
 
-    data_path = "/Users/qzeng/Dropbox/MyDocument/Mac-ZQ/CS/CS234/Material2018/project/data/"
+    data_path = "/home/qzeng/Documents/CS234-Project/data/"
     markets = [
         "{:s}/bitstampUSD_1-min_data_2012-01-01_to_2018-01-08.csv".format(data_path),
         "{:s}/coinbaseUSD_1-min_data_2014-12-01_to_2018-01-08.csv".format(data_path),
@@ -39,7 +41,7 @@ def main(args):
 
     # setup config #
 
-    config = Config("rlcrptocurrency-v1", "test")
+    config = Config("rlcrptocurrency-v1", args.config)
 
     # setup environment #
 
@@ -103,6 +105,10 @@ def main(args):
 if __name__ == "__main__":
     # parse
     parser = argparse.ArgumentParser(description="Run training / evaluation job")
+    parser.add_argument("--eval_date", dest="eval_date", action="store", type=str, required=True,
+                        help="Validation / Evaluation date")
+    parser.add_argument("--config", dest="config", action="store", type=str, required=True,
+                        help="Name of config to create (train) or load (test)")
     parser.add_argument("--mode", dest="mode", action="store", type=str, required=True,
                         help="Mode of command. Either \"train\" or \"test\". "
                              "If \"test\", must specify id of model being restored")
