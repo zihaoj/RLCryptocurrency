@@ -2,21 +2,7 @@ import tensorflow as tf
 import time
 
 
-class config():
-    # Change env_name for the different experiments
-    #
-
-    # output config
-
-    env_name = "rlcrptocurrency-v1"
-    output_path = "results/" + env_name + "/{:d}".format(int(time.time())) + "/"
-    model_output = output_path + "model.weights/"
-    log_path = output_path + "log.txt"
-    plot_output = output_path + "scores.png"
-    record_path = output_path
-    # record_freq = 5
-    # summary_freq = 1
-
+class Config():
     # training config
 
     train_size = 12960  # 3 month
@@ -37,7 +23,7 @@ class config():
     activation = staticmethod(tf.nn.leaky_relu)
     # activation = staticmethod(tf.nn.tanh)
 
-    batch_norm_policy = True   # Whether we apply batch normalization on policy network.
+    batch_norm_policy = False   # Whether we apply batch normalization on policy network.
     batch_norm_baseline = False  # Whether we apply batch normalization on baseline network
 
     # baseline config
@@ -46,8 +32,42 @@ class config():
     normalize_advantage = True
 
     # RNN config (if enabled)
-    rnn_maxlen = 10  # length of buffer, including current time-stamp. Thus must be at least 1.
+    rnn_maxlen = 1  # length of buffer, including current time-stamp. Thus must be at least 1.
     assert rnn_maxlen >= 1, "Invalid buffer max len!"
     rnn_hidden_size = 32
 
+    def __init__(self, env_name, config_name=None):
+        self._env_name = env_name
+
+        if config_name is None:
+            config_name = str(time.time())
+        self._config_name = config_name
+
+    @property
+    def env_name(self):
+        return self._env_name
+
+    @property
+    def config_name(self):
+        return self._config_name
+
+    @property
+    def output_path(self):
+        return "results/{:s}/{:s}/".format(self.env_name, self.config_name)
+
+    @property
+    def model_output(self):
+        return "{:s}/model_caches/".format(self.output_path)
+
+    @property
+    def log_path(self):
+        return "{:s}/log.txt".format(self.output_path)
+
+    @property
+    def plot_output(self):
+        return "{:s}/scores.png".format(self.output_path)
+
+    @property
+    def record_path(self):
+        return self.output_path
 

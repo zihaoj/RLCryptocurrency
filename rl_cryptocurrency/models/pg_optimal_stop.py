@@ -11,13 +11,13 @@ from collections import deque
 
 
 class PGOptimalStop(PGBase):
-    def __init__(self, env, env_aux, config, logger=None):
+    def __init__(self, env, env_aux, config, overwrite, logger=None):
         """
         Only support special case of 2 exchanges and 1 currency this moment
         """
 
         # initialize through base class
-        super(PGOptimalStop, self).__init__(env, env_aux, config, logger)
+        super(PGOptimalStop, self).__init__(env, env_aux, config, overwrite, logger)
 
         # assertion on environment
         assert self._n_exchange == 2, "PG2Exchange1Currency only supports 2 exchanges!"
@@ -223,6 +223,8 @@ class PGOptimalStop(PGBase):
 
                     # perform independent evaluation and record it
                     if counter % self.get_config("eval_freq") == 0:
+                        # make a cache before every evaluation
+                        self.save(counter)
 
                         self._logger.info("\n===> Evaluation ... <===\n")
 

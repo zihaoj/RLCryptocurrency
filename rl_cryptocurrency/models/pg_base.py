@@ -6,6 +6,7 @@
 import os
 import tensorflow as tf
 import numpy as np
+import shutil
 
 from gym_rlcrptocurrency.envs import RLCrptocurrencyEnv
 from rl_cryptocurrency.utils.general import get_logger
@@ -16,7 +17,7 @@ class PGBase(object):
     Wrapper class with models, training and evaluation procedures enclosed.
     """
 
-    def __init__(self, env, env_aux, config, logger=None):
+    def __init__(self, env, env_aux, config, overwrite, logger=None):
         """
         Initialize Policy Gradient Class
 
@@ -26,12 +27,20 @@ class PGBase(object):
                         But in general, this can be any perturbation of default environment for improving agent
                         robustness. It can be None, in case one does not want it.
         :param config: Configuration with all necessary hyper-parameters
+        :param overwrite: Whether the output path is completely overwritten if found available
+                          For training, you might want this to be True most of the time
+                          For testing, you might want this to be False most of the time
         :param logger: Logging instance
         """
 
         # directory for training outputs
-        if not os.path.exists(config.output_path):
+        if overwrite:
+            if os.path.exists(config.output_path):
+                shutil.rmtree(config.output_path)
             os.makedirs(config.output_path)
+        else:
+            if not os.path.exists(config.output_path):
+                os.makedirs(config.output_path)
 
         # cache provided objects
         self._config = config
@@ -58,6 +67,7 @@ class PGBase(object):
         self._fee_transfer = self._env.fee_transfer
 
         # internal states
+        self._saver = None
         self._sess = None
         self._built = False
 
@@ -101,14 +111,21 @@ class PGBase(object):
         if self.get_config("use_baseline"):
             self._add_baseline_op()
 
+        # add saver
+        self._saver = tf.train.Saver(max_to_keep=10)
+
         self._built = True
 
         return self
 
-    def initialize(self):
+    def initialize(self, restore_id=None):
         """
         Assumes the graph has been constructed (have called self.build())
         Creates a tf Session and run initializer of variables
+
+        :param restore_id: The model identity number to restore.
+                           If None (default), then we are initializing a model
+                           If integer, then we are loading model
 
         :return Self, for chaining
         """
@@ -122,8 +139,11 @@ class PGBase(object):
         self._add_summary()
 
         # initiliaze all variables
-        init = tf.global_variables_initializer()
-        self._sess.run(init)
+        if restore_id is None:
+            init = tf.global_variables_initializer()
+            self._sess.run(init)
+        else:
+            self.restore(restore_id)
 
         return self
 
@@ -173,6 +193,40 @@ class PGBase(object):
         """
 
         raise NotImplementedError("Please implement this in your sub-class")
+
+    def save(self, identifier):
+        """
+        Cache the model with identifier
+
+        :param identifier: Integer
+        :return: Self, for chaining
+        """
+
+        print "\n===> Saving Model {:d} ... <===\n".format(identifier)
+
+        save_path = "{:s}/model-{:d}".format(self.get_config("model_output"), identifier)
+
+        self._saver.save(self._sess,
+                         save_path=save_path)
+        return self
+
+    def restore(self, identifier):
+        """
+        Restore the model with identifer
+
+        :param identifier: Integer
+        :return: Self, for chaining
+        """
+
+        print "\n===> Restoring Model {:d} ... <===\n".format(identifier)
+
+        restore_path = "{:s}/model-{:d}".format(self.get_config("model_output"), identifier)
+        restore_path = restore_path.replace("//", "/")
+
+        self._saver.restore(self._sess,
+                            save_path=restore_path)
+
+        return self
 
     ########################################
     # Methods that build up the operations #
@@ -330,7 +384,7 @@ class PGBase(object):
         if len(scores_eval) > 0:
             self._eval_reward = scores_eval[-1]
 
-    def _record_summary(self, t, grad_norm, loss, fd_extra={}):
+    def _record_summary(self, t, grad_norm, loss, fd_extra=None):
         """
         Add summary to tfboard
         :return: Self, for chaining
@@ -344,8 +398,13 @@ class PGBase(object):
             self._grad_norm_placeholder: grad_norm,
             self._loss_placeholder: loss,
         }
-        for key, value in fd_extra.items():
-            fd[key] = value
+
+        # add extra feed
+        if fd_extra is not None:
+            assert type(fd_extra) == dict, "Invalid fd_extra!"
+
+            for key, value in fd_extra.items():
+                fd[key] = value
 
         summary = self._sess.run(self._merged, feed_dict=fd)
         # tensorboard stuff
