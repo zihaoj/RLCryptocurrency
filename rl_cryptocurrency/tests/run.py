@@ -7,7 +7,11 @@ import dill
 from rl_cryptocurrency.models.pg_optimal_stop_more_features import PGOptimalStopMoreFeatures
 from rl_cryptocurrency.models.pg_optimal_stop_rnn import PGOptimalStopRNN
 from rl_cryptocurrency.models.pg_optimal_stop_replay import PGOptimalStopReplay
+from rl_cryptocurrency.models.pg_general_discrete import PGGeneralDiscrete
+from rl_cryptocurrency.models.pg_general_discrete_rnn import PGGeneralDiscreteRNN
+
 from rl_cryptocurrency.tests.config import Config
+# from rl_cryptocurrency.tests.config_discrete import Config
 
 
 def main(args):
@@ -25,15 +29,19 @@ def main(args):
     # eval_start_date = "2017-11-5"     # validation
     # eval_start_date = "2017-11-15"  # evaluation 1
     # eval_start_date = "2017-12-1"   # evaluation 2
+
+    # train_start_date = "2017-5-1"
+    # train_end_date = "2017-11-1"
+
     eval_start_date = args.eval_date
 
     # choose what model to use #
 
-    model_class = PGOptimalStopReplay
+    model_class = PGOptimalStopMoreFeatures
 
     # setup market data #
 
-    data_path = "/home/qzeng/Documents/CS234-Project/data/"
+    data_path = "/Users/qzeng/Dropbox/MyDocument/Mac-ZQ/CS/CS234/Material2018/project/data/"
     markets = [
         "{:s}/bitstampUSD_1-min_data_2012-01-01_to_2018-01-08.csv".format(data_path),
         "{:s}/coinbaseUSD_1-min_data_2014-12-01_to_2018-01-08.csv".format(data_path),
@@ -47,11 +55,13 @@ def main(args):
 
     env = gym.make(config.env_name).set_name("DefaultEnv")
     env.set_markets([[Market(markets[0])], [Market(markets[1])]])
+    env.debug = True
 
     # setup reversed environment #
 
     env_aux = gym.make(config.env_name).set_name("ReverseEnv")
     env_aux.set_markets([[Market(markets[1])], [Market(markets[0])]])
+    env_aux.debug = True
 
     # initialize environment #
 
@@ -94,7 +104,7 @@ def main(args):
         eval_result = []
         for _ in range(args.num_test):
             env_eval.init(init_portfolio, None)
-            eval_result.append(agent.evaluate(env_eval, 7*1440))
+            eval_result.append(agent.evaluate(env_eval, 7*1440, store_full=False))
         dill.dump(eval_result, open("eval_result.dill", "w"))
 
         # print out mean of total accumulated return

@@ -262,15 +262,21 @@ class PGOptimalStop(PGBase):
         self._logger.info("- Training done.")
         return self
 
-    def evaluate(self, env, n):
+    def evaluate(self, env, n, store_full=False):
         """
         Instead of using sample_path(), we do the normal simulation to test return for a pre-defined period of time
+
+        :param env: External environment. Make sure it has been well initialized before passed in
+        :param n: Number of time-stamps to run forward
+        :param store_full: If we store full information in addition to rewards. False by default.
         """
 
         # initialization
         counter = 0
         reward_list = []
         accumulated_reward_list = [0.]
+        obs_list = []
+        action_list = []
 
         # initialize buffer
         max_buffer_len = self.get_config("rnn_maxlen")
@@ -287,6 +293,9 @@ class PGOptimalStop(PGBase):
             # fill in current obs
             observations_buffer.append(obs)
 
+            if store_full:
+                obs_list.append(obs)
+
             # sample an action
             action = self._sess.run(
                 self._sampled_action,
@@ -296,17 +305,24 @@ class PGOptimalStop(PGBase):
                 }
             )[0]
 
-            obs, reward, _, _ = env.step(self._transform_action(action, obs))
+            action_env = self._transform_action(action, obs)
+            obs, reward, _, _ = env.step(action_env)
+
+            if store_full:
+                action_list.append(action_env)
 
             # update
-            counter += 1
             reward_list.append(reward)
             accumulated_reward_list.append(accumulated_reward_list[-1] + reward)
+
+            counter += 1
             pbar.update(1)
 
         return {
             "reward": reward_list,
-            "accumulated_reward": accumulated_reward_list
+            "accumulated_reward": accumulated_reward_list,
+            "obs_list": obs_list,
+            "action_list": action_list,
         }
 
     def _add_placeholders_op(self):

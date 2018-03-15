@@ -5,21 +5,21 @@ import time
 class Config(object):
     # training config
 
-    train_size = 12960  # 3 month
-    batch_size = 32
+    train_size = 2592  # 6 month
+    batch_size = 5
     num_epoch = 10
-    max_ep_len = 10  # 10 minute
+    max_ep_len = 100
     mix_reverse = True  # whether we mix reversed episode with normal one into the same batch
 
     gamma = 1.0
-    learning_rate = 5e-3
+    learning_rate = 1e-2
 
     eval_freq = 100
 
     # MLP network config
 
     n_layers = 1
-    layer_size = 32
+    layer_size = 64
     activation = staticmethod(tf.nn.leaky_relu)
     # activation = staticmethod(tf.nn.tanh)
 
@@ -32,7 +32,7 @@ class Config(object):
     normalize_advantage = True
 
     # RNN config (if enabled)
-    rnn_maxlen = 1  # length of buffer, including current time-stamp. Thus must be at least 1.
+    rnn_maxlen = 100  # length of buffer, including current time-stamp. Thus must be at least 1.
     assert rnn_maxlen >= 1, "Invalid buffer max len!"
     rnn_hidden_size = 32
 
