@@ -29,6 +29,9 @@ class PGOptimalStopReplay(PGOptimalStop):
 
             self._is_training_placeholder = tf.placeholder(tf.bool, shape=(), name="is_training_placeholder")
 
+            if self.get_config("use_return"):
+                self._return_placeholder = tf.placeholder(dtype=tf.float32, shape=(None,), name="return_placeholder")
+
         return self
 
     def _transform_obs(self, obs_env_buffer):

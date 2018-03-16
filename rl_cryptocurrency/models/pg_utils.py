@@ -35,3 +35,68 @@ def add_exploration_entropy(class_obj, tau):
 
     return RLEnhancedExplorationEntropy
 
+
+def add_exploration_ment(class_obj, tau):
+    """
+    This is in principle equivalent to entropy-based exploration, except difference in implementation
+    In _entropy implementation, the gradient is computed on full entropy (with summation over all possible actions)
+    directly
+    In this implementation, sampling method will be used instead
+    """
+
+    class RLEnhancedExplorationMent(class_obj):
+        def _add_loss_op(self):
+            with tf.variable_scope("policy_loss"):
+                loss_to_max = self._logprob * (self._advantage_placeholder - tau) - 0.5 * tau * tf.square(self._logprob)
+                self._loss = -tf.reduce_mean(loss_to_max)
+
+            return self
+
+    return RLEnhancedExplorationMent
+
+
+def add_exploration_urex(class_obj, tau):
+    """
+    Attempts to add exploration following UREX method:
+    https://arxiv.org/abs/1611.09321
+
+    assuming return_placeholder is available
+    also assuming a fixed-length episode, as specified in the config by "max_ep_len"
+
+    Here we have to assume the episode length is fixed and accessible from configuration
+    """
+
+    assert tau > 0, "Invalid tau {:.4f}!".format(tau)
+
+    class RLEnhancedExplorationUrex(class_obj):
+        def _add_loss_op(self):
+            assert self.get_config("use_return"), "Please turn on use_return in your config first!"
+
+            with tf.variable_scope("policy_loss"):
+                # REINFORCE part as usual
+                loss_to_max = self._logprob * self._advantage_placeholder
+
+                # the UREX part
+                return_reshape = tf.reshape(self._return_placeholder, shape=(-1, self.get_config("max_ep_len")),
+                                            name="return_reshape")
+                logprob_reshape = tf.reshape(self._logprob, shape=(-1, self.get_config("max_ep_len")),
+                                             name="logprob_reshape")
+
+                return_per_episode = return_reshape[:, 0]
+                logprob_per_episode = tf.reduce_sum(logprob_reshape, axis=1)
+                weight_unscaled_per_episode = return_per_episode / tau - logprob_per_episode
+                weight_per_episode = tf.nn.softmax(weight_unscaled_per_episode)
+
+                weight = tf.reshape(weight_per_episode, shape=(-1, 1)) * tf.ones(shape=(self.get_config("max_ep_len"),))
+                weight = tf.reshape(weight, shape=(-1,))
+                weight_forward_only = tf.stop_gradient(weight, "weight_forward_only")
+
+                urex = self._logprob * tau * weight_forward_only
+
+                # add them together
+                self._loss = -tf.reduce_mean(loss_to_max + urex)
+
+            return self
+
+    return RLEnhancedExplorationUrex
+

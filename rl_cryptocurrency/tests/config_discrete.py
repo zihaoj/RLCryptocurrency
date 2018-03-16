@@ -37,6 +37,10 @@ class Config(object):
     rnn_hidden_size = 16
     rnn_cell = "LSTM"
 
+    # whether we store return as placeholder
+    # so far only needed for UREX exploration
+    use_return = True
+
     def __init__(self, env_name, config_name=None):
         self._env_name = env_name
 

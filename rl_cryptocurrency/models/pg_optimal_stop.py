@@ -189,15 +189,19 @@ class PGOptimalStop(PGBase):
 
                     # update policy network
                     # DEBUG -- self._logprob
+                    feed_dict_update_policy = {
+                        self._obs_placeholder: np.array(map(self._transform_obs, observations)),
+                        self._action_placeholder: np.array(actions),
+                        self._advantage_placeholder: advantages,
+                        self._is_training_placeholder: True,
+                    }
+                    if self.get_config("use_return"):
+                        feed_dict_update_policy[self._return_placeholder] = np.copy(returns)
+
                     _, grad_norm, loss = \
                         self._sess.run(
                             [self._train_op, self._grad_norm, self._loss],  #, self._logprob],
-                            feed_dict={
-                                self._obs_placeholder: np.array(map(self._transform_obs, observations)),
-                                self._action_placeholder: np.array(actions),
-                                self._advantage_placeholder: advantages,
-                                self._is_training_placeholder: True,
-                            }
+                            feed_dict=feed_dict_update_policy,
                         )
                     
                     # # DEBUG
@@ -341,6 +345,9 @@ class PGOptimalStop(PGBase):
                                                          name="advantage_placeholder")
 
             self._is_training_placeholder = tf.placeholder(tf.bool, shape=(), name="is_training_placeholder")
+
+            if self.get_config("use_return"):
+                self._return_placeholder = tf.placeholder(dtype=tf.float32, shape=(None,), name="return_placeholder")
 
         return self
 
