@@ -9,14 +9,12 @@ import numpy as np
 class PGGeneralDiscrete(PGGeneral):
     def _add_placeholders_op(self):
         """
-        Only use adjusted price gap
-        A time window is potentially considered
-
-        Can potentially add buffer
+        General setup for discrete action space
+        Two observation considered this moment: price gap and buffer
         """
 
         with tf.variable_scope("placeholder"):
-            obs_dim = 1
+            obs_dim = 2
 
             self._obs_placeholder = tf.placeholder(dtype=tf.float32,
                                                    shape=(None, self.get_config("rnn_maxlen"), obs_dim),
@@ -34,7 +32,7 @@ class PGGeneralDiscrete(PGGeneral):
 
     def _build_policy_network_op(self):
         """
-        A general discrete action space
+        A general discrete action space (in MLP setup)
         Stuff are hard-coded for now
 
         2 action space (5 has been tried before and it fails ...)
@@ -61,6 +59,7 @@ class PGGeneralDiscrete(PGGeneral):
                 activation_fn=None,
                 scope="layer_output",
             )
+            self._logits = logits
 
         with tf.variable_scope("policy_sample"):
             # sample from it
@@ -124,7 +123,7 @@ class PGGeneralDiscrete(PGGeneral):
             Obtain the feature from each time-stamp
             """
 
-            _, obs_market, _ = obs_env
+            _, obs_market, obs_buffer = obs_env
 
             price_0 = obs_market[0, 0, self._price_index]
             price_1 = obs_market[1, 0, self._price_index]
@@ -132,7 +131,10 @@ class PGGeneralDiscrete(PGGeneral):
             price_gap_adjusted = price_high * (1. - self._fee_exchange) - \
                                  price_low / ((1. - self._fee_exchange) * (1. - self._fee_transfer))
 
-            return [price_gap_adjusted]
+            # DEBUG
+            assert obs_buffer.shape == (1,), "Unexpected buffer observation!"
+
+            return [price_gap_adjusted, obs_buffer[0]]
 
         # shape: [time-stamp, features]
         return np.array(map(get_timestamp_feature, obs_env_buffer))

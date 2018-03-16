@@ -12,14 +12,14 @@ class Config(object):
     mix_reverse = True  # whether we mix reversed episode with normal one into the same batch
 
     gamma = 1.0
-    learning_rate = 1e-2
+    learning_rate = 5e-3
 
     eval_freq = 100
 
     # MLP network config
 
     n_layers = 1
-    layer_size = 64
+    layer_size = 32
     activation = staticmethod(tf.nn.leaky_relu)
     # activation = staticmethod(tf.nn.tanh)
 
@@ -32,9 +32,10 @@ class Config(object):
     normalize_advantage = True
 
     # RNN config (if enabled)
-    rnn_maxlen = 100  # length of buffer, including current time-stamp. Thus must be at least 1.
+    rnn_maxlen = 60  # length of buffer, including current time-stamp. Thus must be at least 1.
     assert rnn_maxlen >= 1, "Invalid buffer max len!"
-    rnn_hidden_size = 32
+    rnn_hidden_size = 16
+    rnn_cell = "LSTM"
 
     def __init__(self, env_name, config_name=None):
         self._env_name = env_name

@@ -10,8 +10,10 @@ from rl_cryptocurrency.models.pg_optimal_stop_replay import PGOptimalStopReplay
 from rl_cryptocurrency.models.pg_general_discrete import PGGeneralDiscrete
 from rl_cryptocurrency.models.pg_general_discrete_rnn import PGGeneralDiscreteRNN
 
-from rl_cryptocurrency.tests.config import Config
-# from rl_cryptocurrency.tests.config_discrete import Config
+# from rl_cryptocurrency.tests.config import Config
+from rl_cryptocurrency.tests.config_discrete import Config
+
+from rl_cryptocurrency.models.pg_utils import add_exploration_entropy
 
 
 def main(args):
@@ -24,20 +26,20 @@ def main(args):
     # train_end_date = "2015-8-1"
     # eval_start_date = "2015-9-1"
 
-    train_start_date = "2017-8-1"
-    train_end_date = "2017-11-1"
+    # train_start_date = "2017-8-1"
+    # train_end_date = "2017-11-1"
     # eval_start_date = "2017-11-5"     # validation
     # eval_start_date = "2017-11-15"  # evaluation 1
     # eval_start_date = "2017-12-1"   # evaluation 2
 
-    # train_start_date = "2017-5-1"
-    # train_end_date = "2017-11-1"
+    train_start_date = "2017-5-1"
+    train_end_date = "2017-11-1"
 
     eval_start_date = args.eval_date
 
     # choose what model to use #
 
-    model_class = PGOptimalStopMoreFeatures
+    model_class = add_exploration_entropy(PGGeneralDiscreteRNN, tau=0.01)
 
     # setup market data #
 
@@ -85,22 +87,26 @@ def main(args):
     # DEBUG
     env_eval_reverse.debug = True
 
+    # get / create agent #
+
     if args.mode == "train":
+        overwrite_local = args.overwrite
+    else:
+        overwrite_local = False
+    agent = model_class(env, env_aux, config, overwrite=overwrite_local).build().initialize(restore_id=args.model)
 
-        # create model #
-
-        agent = model_class(env, env_aux, config, overwrite=True).build().initialize(restore_id=args.model)
+    if args.mode == "train":
 
         # training job #
 
         agent = agent.train(init_portfolio, train_start_date, end_date=train_end_date,
                             env_eval_list=[env_eval, env_eval_reverse])
-
-        return
     else:
-        agent = model_class(env, env_aux, config, overwrite=False).build().initialize(restore_id=args.model)
 
-        # collect all tests
+        # evaluation job #
+        # TODO: length of evaluation hard-coded for now
+        # TODO: store_full is also hard-coded for now
+
         eval_result = []
         for _ in range(args.num_test):
             env_eval.init(init_portfolio, None)
@@ -110,6 +116,8 @@ def main(args):
         # print out mean of total accumulated return
         total_return_list = map(lambda index: eval_result[index]["accumulated_reward"][-1], range(len(eval_result)))
         print "Total return: {:.4f} +/- {:.4f}".format(np.mean(total_return_list), np.std(total_return_list))
+
+    return agent
 
 
 if __name__ == "__main__":
@@ -126,6 +134,8 @@ if __name__ == "__main__":
                         help="Model id to be restored. Default is None, in which case will be randomly initialized")
     parser.add_argument("--num_test", dest="num_test", action="store", type=int, default=1,
                         help="Number of iterations to be performed for evaluation. Only activated if mode is test")
+    parser.add_argument("--overwrite", dest="overwrite", action="store_true",
+                        help="Whether overwrite the output space. This will be ignored if mode is test")
     args = parser.parse_args()
 
     # run

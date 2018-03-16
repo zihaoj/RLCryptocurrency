@@ -368,6 +368,7 @@ class PGOptimalStop(PGBase):
                 activation_fn=None,
                 scope="layer_output",
             )
+            self._logits = logits
 
         with tf.variable_scope("policy_sample"):
             # sample from it

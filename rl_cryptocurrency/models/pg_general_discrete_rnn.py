@@ -3,6 +3,28 @@ from rl_cryptocurrency.models.pg_general_discrete import PGGeneralDiscrete
 import tensorflow as tf
 
 
+def _convert_last_state(last_state, keep_all=True):
+    """
+    convert state returned from cell to tensor
+    for non-LSTM cell, this is straightforward
+    This is mainly for LSTM cell
+
+    keep_all is meant for LSTM cell:
+    If True, both c, h would be encoded
+    If False, only h would be encoded
+    """
+
+    if type(last_state) == tf.nn.rnn_cell.LSTMStateTuple:
+        # LSTM case
+        if keep_all:
+            return tf.concat([last_state.c, last_state.h], axis=1)
+        else:
+            return last_state.h
+    else:
+        # non-LSTM case
+        return last_state
+
+
 class PGGeneralDiscreteRNN(PGGeneralDiscrete):
     def _build_policy_network_op(self):
         """
@@ -11,14 +33,18 @@ class PGGeneralDiscreteRNN(PGGeneralDiscrete):
 
         with tf.variable_scope("policy_network"):
             # RNN part
-            # only consider GRU this moment
             net_rnn = self._obs_placeholder
-            cell = tf.nn.rnn_cell.GRUCell(num_units=self.get_config("rnn_hidden_size"))
+            if self.get_config("rnn_cell") == "GRU":
+                cell = tf.nn.rnn_cell.GRUCell(num_units=self.get_config("rnn_hidden_size"))
+            elif self.get_config("rnn_cell") == "LSTM":
+                cell = tf.nn.rnn_cell.LSTMCell(num_units=self.get_config("rnn_hidden_size"))
+            else:
+                raise NotImplementedError("Unknown rnn_cell!")
             _, last_state = tf.nn.dynamic_rnn(cell, net_rnn,
                                               sequence_length=None, dtype=tf.float32)
 
             # MLP part
-            net_mlp = last_state
+            net_mlp = _convert_last_state(last_state, keep_all=False)
             for layer in range(self.get_config("n_layers")):
                 net_mlp = tf.contrib.layers.fully_connected(
                     inputs=net_mlp,
@@ -37,6 +63,7 @@ class PGGeneralDiscreteRNN(PGGeneralDiscrete):
                 activation_fn=None,
                 scope="layer_output",
             )
+            self._logits = logits
 
         with tf.variable_scope("policy_sample"):
             # sample from it
@@ -56,14 +83,18 @@ class PGGeneralDiscreteRNN(PGGeneralDiscrete):
 
         with tf.variable_scope("baseline_network"):
             # RNN part
-            # only consider GRU this moment
             net_rnn = self._obs_placeholder
-            cell = tf.nn.rnn_cell.GRUCell(num_units=self.get_config("rnn_hidden_size"))
+            if self.get_config("rnn_cell") == "GRU":
+                cell = tf.nn.rnn_cell.GRUCell(num_units=self.get_config("rnn_hidden_size"))
+            elif self.get_config("rnn_cell") == "LSTM":
+                cell = tf.nn.rnn_cell.LSTMCell(num_units=self.get_config("rnn_hidden_size"))
+            else:
+                raise NotImplementedError("Unknown rnn_cell!")
             _, last_state = tf.nn.dynamic_rnn(cell, net_rnn,
                                               sequence_length=None, dtype=tf.float32)
 
             # MLP part
-            net_mlp = last_state
+            net_mlp = _convert_last_state(last_state, keep_all=False)
             for layer in range(self.get_config("n_layers")):
                 net_mlp = tf.contrib.layers.fully_connected(
                     inputs=net_mlp,
