@@ -22,7 +22,8 @@ def add_exploration_entropy(class_obj, tau):
                 loss_to_max = self._logprob * self._advantage_placeholder
 
                 # entropy-based exploration
-                entropy = tf.nn.softmax_cross_entropy_with_logits(
+                # important: use v2, otherwise back propagation will only happen on logits
+                entropy = tf.nn.softmax_cross_entropy_with_logits_v2(
                     labels=tf.nn.softmax(self._logits, axis=1),
                     logits=self._logits,
                 )

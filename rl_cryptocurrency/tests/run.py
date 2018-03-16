@@ -9,6 +9,7 @@ from rl_cryptocurrency.models.pg_optimal_stop_rnn import PGOptimalStopRNN
 from rl_cryptocurrency.models.pg_optimal_stop_replay import PGOptimalStopReplay
 from rl_cryptocurrency.models.pg_general_discrete import PGGeneralDiscrete
 from rl_cryptocurrency.models.pg_general_discrete_rnn import PGGeneralDiscreteRNN
+from rl_cryptocurrency.models.pg_general_discrete5_rnn import PGGeneralDiscrete5RNN
 
 # from rl_cryptocurrency.tests.config import Config
 from rl_cryptocurrency.tests.config_discrete import Config
@@ -39,11 +40,11 @@ def main(args):
 
     # choose what model to use #
 
-    model_class = add_exploration_entropy(PGGeneralDiscreteRNN, tau=0.01)
+    model_class = add_exploration_entropy(PGGeneralDiscrete5RNN, tau=0.01)
 
     # setup market data #
 
-    data_path = "/Users/qzeng/Dropbox/MyDocument/Mac-ZQ/CS/CS234/Material2018/project/data/"
+    data_path = "/home/qzeng/Documents/CS234-Project/data/"
     markets = [
         "{:s}/bitstampUSD_1-min_data_2012-01-01_to_2018-01-08.csv".format(data_path),
         "{:s}/coinbaseUSD_1-min_data_2014-12-01_to_2018-01-08.csv".format(data_path),
