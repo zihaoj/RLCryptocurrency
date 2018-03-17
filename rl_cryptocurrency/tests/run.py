@@ -10,6 +10,7 @@ from rl_cryptocurrency.models.pg_optimal_stop_replay import PGOptimalStopReplay
 from rl_cryptocurrency.models.pg_general_discrete import PGGeneralDiscrete
 from rl_cryptocurrency.models.pg_general_discrete_rnn import PGGeneralDiscreteRNN
 from rl_cryptocurrency.models.pg_general_discrete5_rnn import PGGeneralDiscrete5RNN
+from rl_cryptocurrency.models.pg_general_discrete3_rnn import PGGeneralDiscrete3RNN
 
 # from rl_cryptocurrency.tests.config import Config
 from rl_cryptocurrency.tests.config_discrete import Config
@@ -42,11 +43,12 @@ def main(args):
 
     # model_class = PGGeneralDiscreteRNN
     # model_class = add_exploration_ment(PGGeneralDiscreteRNN, tau=0.01)
-    model_class = add_exploration_urex(PGGeneralDiscreteRNN, tau=0.1)
+    model_class = add_exploration_urex(PGGeneralDiscrete3RNN, tau=0.1)
 
     # setup market data #
 
-    data_path = "/Users/qzeng/Dropbox/MyDocument/Mac-ZQ/CS/CS234/Material2018/project/data/"
+    # data_path = "/Users/qzeng/Dropbox/MyDocument/Mac-ZQ/CS/CS234/Material2018/project/data/"
+    data_path = "/home/qzeng/Dropbox/Desktop/Ubuntu/CS234-Project/data/"
     markets = [
         "{:s}/bitstampUSD_1-min_data_2012-01-01_to_2018-01-08.csv".format(data_path),
         "{:s}/coinbaseUSD_1-min_data_2014-12-01_to_2018-01-08.csv".format(data_path),
@@ -113,7 +115,7 @@ def main(args):
         eval_result = []
         for _ in range(args.num_test):
             env_eval.init(init_portfolio, None)
-            eval_result.append(agent.evaluate(env_eval, 7*1440, store_full=False))
+            eval_result.append(agent.evaluate(env_eval, 7*1440, store_full=(args.num_test == 1)))
         dill.dump(eval_result, open("eval_result.dill", "w"))
 
         # print out mean of total accumulated return

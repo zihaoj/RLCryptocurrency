@@ -120,10 +120,10 @@ def accum_return_plot(f_greedy, f_model):
 
 
 if __name__ == "__main__":
-    # show_action("eval_result.dill")
+    show_action("eval_result.dill")
 
-    dir_base = "/Users/qzeng/Dropbox/MyDocument/Mac-ZQ/CS/CS234/Material2018/project/"
-    accum_return_plot(
-        "{:s}/gym-rlcrptocurrency/gym_rlcrptocurrency/tests/poster/20171201_20runs/result_run_policy.dill".format(dir_base),
-        "{:s}/RLCryptocurrency/rl_cryptocurrency/tests/poster/optimal-stop-default/20171201_20run/eval_result.dill".format(dir_base)
-    )
+    # dir_base = "/Users/qzeng/Dropbox/MyDocument/Mac-ZQ/CS/CS234/Material2018/project/"
+    # accum_return_plot(
+    #     "{:s}/gym-rlcrptocurrency/gym_rlcrptocurrency/tests/poster/20171201_20runs/result_run_policy.dill".format(dir_base),
+    #     "{:s}/RLCryptocurrency/rl_cryptocurrency/tests/poster/optimal-stop-default/20171201_20run/eval_result.dill".format(dir_base)
+    # )
