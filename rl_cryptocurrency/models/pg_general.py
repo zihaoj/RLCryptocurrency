@@ -65,6 +65,32 @@ class PGGeneral(PGOptimalStop):
                         self._is_training_placeholder: False,
                     }
                 )[0]
+
+                # # DEBUG
+                # action, condition_stuck, debug_adjusted_price_gap, debug_adjusted_price_gap_ref, debug_prob_action2 = self._sess.run(
+                #     [self._sampled_action, self._condition_stuck, self._debug_adjusted_price_gap, self._debug_adjusted_price_gap_ref, self._debug_prob_action2],
+                #     feed_dict={
+                #         self._obs_placeholder: self._transform_obs(observations_buffer)[None],
+                #         self._is_training_placeholder: False,
+                #     }
+                # )
+                #
+                # action = action[0]
+                # condition_stuck = condition_stuck[0]
+                # debug_adjusted_price_gap = debug_adjusted_price_gap[0]
+                # debug_adjusted_price_gap_ref = debug_adjusted_price_gap_ref[0]
+                # debug_prob_action2 = debug_prob_action2[0]
+                #
+                # if not condition_stuck:
+                #     assert action < 2, "Invalid action -- 1!"
+                # else:
+                #     assert action in [0, 2], "Invalid action -- 2!"
+                #
+                #     print "{:.4f}, {:.4f}, {:.4f}".format(debug_adjusted_price_gap, debug_adjusted_price_gap_ref, debug_prob_action2)
+                #
+                #     if action == 2:
+                #         print "HERE!!!"
+
                 actions.append(action)
 
                 # move one step forward

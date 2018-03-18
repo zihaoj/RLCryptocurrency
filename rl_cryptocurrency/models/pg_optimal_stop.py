@@ -279,8 +279,10 @@ class PGOptimalStop(PGBase):
         counter = 0
         reward_list = []
         accumulated_reward_list = [0.]
-        obs_list = []
-        action_list = []
+        obs_raw_list = []           # as returned from environment
+        obs_transform_list = []     # transformed to the form accepted by policy network
+        action_raw_list = []        # as returned by policy network
+        action_transform_list = []  # as fed into the environment
 
         # initialize buffer
         max_buffer_len = self.get_config("rnn_maxlen")
@@ -298,13 +300,17 @@ class PGOptimalStop(PGBase):
             observations_buffer.append(obs)
 
             if store_full:
-                obs_list.append(obs)
+                obs_raw_list.append(obs)
 
             # sample an action
+            obs_transform = self._transform_obs(observations_buffer)
+            if store_full:
+                obs_transform_list.append(obs_transform)
+
             action = self._sess.run(
                 self._sampled_action,
                 feed_dict={
-                    self._obs_placeholder: self._transform_obs(observations_buffer)[None],
+                    self._obs_placeholder: obs_transform[None],
                     self._is_training_placeholder: False,
                 }
             )[0]
@@ -313,7 +319,8 @@ class PGOptimalStop(PGBase):
             obs, reward, _, _ = env.step(action_env)
 
             if store_full:
-                action_list.append(action_env)
+                action_raw_list.append(action)
+                action_transform_list.append(action_env)
 
             # update
             reward_list.append(reward)
@@ -325,8 +332,10 @@ class PGOptimalStop(PGBase):
         return {
             "reward": reward_list,
             "accumulated_reward": accumulated_reward_list,
-            "obs_list": obs_list,
-            "action_list": action_list,
+            "obs_raw_list": obs_raw_list,
+            "obs_transform_list": obs_transform_list,
+            "action_raw_list": action_raw_list,
+            "action_transform_list": action_transform_list,
         }
 
     def _add_placeholders_op(self):

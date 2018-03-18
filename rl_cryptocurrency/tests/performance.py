@@ -12,8 +12,8 @@ def show_action(file_path):
 
     price_index = 6  # TODO: hard-coded
 
-    obs_list = record[0]["obs_list"][:]
-    action_list = record[0]["action_list"][:]
+    obs_list = record[0]["obs_raw_list"][:]
+    action_list = record[0]["action_transform_list"][:]
 
     ex_A_price = np.array(map(lambda obs: obs[1][0, 0, price_index], obs_list))
     ex_B_price = np.array(map(lambda obs: obs[1][1, 0, price_index], obs_list))
