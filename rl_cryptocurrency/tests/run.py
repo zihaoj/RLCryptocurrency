@@ -11,6 +11,7 @@ from rl_cryptocurrency.models.pg_general_discrete import PGGeneralDiscrete
 from rl_cryptocurrency.models.pg_general_discrete_rnn import PGGeneralDiscreteRNN
 from rl_cryptocurrency.models.pg_general_discrete5_rnn import PGGeneralDiscrete5RNN
 from rl_cryptocurrency.models.pg_general_discrete3_rnn import PGGeneralDiscrete3RNN
+from rl_cryptocurrency.models.pg_general_discrete_experiment import PGGeneralDiscreteExperiment
 
 # from rl_cryptocurrency.tests.config import Config
 from rl_cryptocurrency.tests.config_discrete import Config
@@ -41,9 +42,10 @@ def main(args):
 
     # choose what model to use #
 
-    # model_class = PGGeneralDiscreteRNN
+    # model_class = PGGeneralDiscreteExperiment
+    model_class = add_exploration_urex(PGGeneralDiscreteExperiment, tau=0.1)
     # model_class = add_exploration_ment(PGGeneralDiscreteRNN, tau=0.01)
-    model_class = add_exploration_urex(PGGeneralDiscrete3RNN, tau=0.1)
+    # model_class = add_exploration_urex(PGGeneralDiscrete3RNN, tau=0.1)
 
     # setup market data #
 

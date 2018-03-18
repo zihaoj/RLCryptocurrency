@@ -575,7 +575,13 @@ class PGOptimalStop(PGBase):
         max_delta = int((pd.to_datetime(end_date) - pd.to_datetime(start_date)).total_seconds() / 60.)
         max_ep_len = self.get_config("max_ep_len")
 
-        train_pool = range(0, max_delta, max_ep_len)
+        if self.get_config("allow_ep_overlap"):
+            assert max_delta - max_ep_len > n, "Impossible to draw {:d} training episodes!".format(n)
+
+            train_pool = np.random.choice(max_delta - max_ep_len, size=n, replace=False).tolist()
+        else:
+            train_pool = range(0, max_delta, max_ep_len)
+
         if len(train_pool) > n:
             train_pool = train_pool[:n]
         else:
