@@ -5,10 +5,10 @@ import time
 class Config(object):
     # training config
 
-    train_size = 2592  # 6 month
+    train_size = 5000  # 2592  # 6 month
     batch_size = 5
     num_epoch = 10
-    max_ep_len = 300  # 100
+    max_ep_len = 100
     mix_reverse = True  # whether we mix reversed episode with normal one into the same batch
     allow_ep_overlap = True
 

@@ -43,10 +43,9 @@ def main(args):
 
     # choose what model to use #
 
-    model_class = PGGeneralDiscreteExperiment
-    # model_class = add_exploration_urex(PGGeneralDiscreteExperiment, tau=0.1)
-    # model_class = add_exploration_ment(PGGeneralDiscreteRNN, tau=0.01)
-    # model_class = add_exploration_urex(PGGeneralDiscrete3RNN, tau=0.1)
+    # model_class = PGGeneralDiscreteExperiment
+    # model_class = add_exploration_entropy(PGGeneralDiscreteExperiment, tau=0.01)
+    model_class = add_exploration_urex(PGGeneralDiscreteExperiment, tau=0.1)
 
     # setup market data #
 
