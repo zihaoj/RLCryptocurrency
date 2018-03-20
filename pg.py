@@ -13,6 +13,7 @@ import time
 from utils.general import get_logger, Progbar, export_plot
 from config import config
 from datetime import timedelta, date, datetime
+import h5py
 
 
 def build_mlp(
@@ -64,7 +65,7 @@ def build_mlp(
 
       dense.append(thisdense)
 
-    output = tf.contrib.layers.fully_connected(inputs = dense[-1], num_outputs = output_size, activation_fn = output_activation, scope = "output", weights_initializer = tf.zeros_initializer(), biases_initializer = tf.zeros_initializer() )
+    output = tf.contrib.layers.fully_connected(inputs = dense[-1], num_outputs = output_size, activation_fn = output_activation, scope = "output")
   
     return output
 
@@ -94,6 +95,23 @@ def build_rnn(
     
     output = tf.contrib.layers.fully_connected(inputs =last , num_outputs = output_size, activation_fn = output_activation, scope = "output")
   
+    return output
+
+
+def build_threshold(price_gap, hold_gap, delta, theta, scope):
+
+  '''
+  Build a recurrent neural netowrk
+  '''
+  #######################################################
+  #########   YOUR CODE HERE - 7-20 lines.   ############
+
+
+  with tf.variable_scope(scope):
+    delta[scope] = tf.get_variable("threshold_delta_"+scope, shape=[1], dtype = tf.float32, initializer=tf.initializers.constant([1])) ## scaling of hold gap
+    theta[scope] = tf.get_variable("threshold_theta_"+scope, shape=[1], dtype = tf.float32, initializer=tf.initializers.constant([0.5])) ## a small volume allowing deficit
+    output = tf.sign(price_gap + delta[scope]*hold_gap + theta[scope])
+
     return output
 
 
@@ -152,7 +170,7 @@ class PG(object):
     if config.use_only_price_info:
       self.observation_dim += env._n_exchange*(env._n_exchange-1)/2 * env._n_currency
     else:
-      self.observation_dim += env._n_exchange*(env._n_exchange-1)/2 * env._n_currency *2 + env._n_currency  ## price difference + price difference ratio + amount in transfer 
+      self.observation_dim += env._n_exchange*(env._n_exchange-1)/2 * env._n_currency *2 + env._n_currency  ## price difference + transaction fee  + amount in transfer 
 
     #self.observation_dim += env._n_exchange * env._n_currency * len(env.market_obs_attributes) use full info
 
@@ -186,7 +204,7 @@ class PG(object):
                                      [10000, 1], ],
                                    dtype=np.float64)
 
-    self.start_date = datetime(2015, 3, 1)
+    self.start_date = datetime(2017, 7, 20)
     self.env.init( self.init_portfolio, self.start_date )
 
     self.build()
@@ -213,8 +231,16 @@ class PG(object):
       self.observation_placeholder = tf.placeholder(tf.float32, shape=(None, self.config.max_ep_len, self.observation_dim) )
     if self.config.network_type == "MLP":
       self.observation_placeholder = tf.placeholder(tf.float32, shape=(None, self.replaysteps, self.observation_dim) )
+
+    self.delta = {}
+    self.theta = {}
+
     self.action_constraint_up_placeholder   = tf.placeholder(tf.float32, shape=(None, self.action_dim), name="action_up_placeholder" )
     self.action_constraint_dn_placeholder   = tf.placeholder(tf.float32, shape=(None, self.action_dim), name="action_dn_placeholder" )
+    self.price_gap_A_high_B_low_placeholder   = tf.placeholder(tf.float32, shape=(None, 1), name="price_gap_A_high_B_low")
+    self.price_gap_B_high_A_low_placeholder   = tf.placeholder(tf.float32, shape=(None, 1), name="price_gap_B_high_A_low")
+    self.hold_gap_placeholder   = tf.placeholder(tf.float32, shape=(None, 1), name="hold_gap")
+
     if self.discrete:
       self.action_placeholder = tf.placeholder(tf.int64,   shape=(None))
     else:
@@ -269,30 +295,49 @@ class PG(object):
     #######################################################
     #########   YOUR CODE HERE - 5-10 lines.   ############
 
-    self.action_means = None
+    self.action_means_sig = None
     
     if self.config.network_type == "MLP":
-      self.action_means =          build_mlp(mlp_input=self.observation_placeholder,
-                                             output_size = self.action_dim,
-                                             scope=scope,
-                                             n_layers=self.config.n_layers, size=self.config.layer_size, output_activation=tf.nn.sigmoid)
+      self.action_means_sig =          build_mlp(mlp_input=self.observation_placeholder,
+                                                 output_size = self.action_dim,
+                                                 scope=scope,
+                                                 n_layers=self.config.n_layers, 
+                                                 size=self.config.layer_size, 
+                                                 output_activation=tf.nn.tanh)
+
 
     if self.config.network_type == "RNN":
+      self.action_means_sig =          build_rnn(rnn_input=self.observation_placeholder,
+                                                 n_hidden = self.config.layer_size,
+                                                 batch_size = self.config.batch_size,
+                                                 rnn_length = self.config.replaysteps, 
+                                                 output_size = self.action_dim,
+                                                 scope=scope,
+                                                 output_activation=tf.nn.tanh)
 
-      self.action_means =          build_rnn(rnn_input=self.observation_placeholder,
-                                             n_hidden = self.config.layer_size,
-                                             batch_size = self.config.batch_size,
-                                             rnn_length = self.config.max_ep_len,
-                                             output_size = self.action_dim,
-                                             scope=scope,
-                                             output_activation=tf.nn.sigmoid)
 
-    self.action_means_tf = (self.action_constraint_up_placeholder-self.action_constraint_dn_placeholder)*self.action_means+self.action_constraint_dn_placeholder
-    self.log_std =          tf.get_variable("logsigma", shape=[self.action_dim], dtype = tf.float32, initializer=tf.initializers.constant([-2.5]*self.action_dim) )
+    self.action_means_tf = self.action_means_sig*self.config.max_quantity_per_transaction
+    self.log_std        = tf.get_variable("logsigma", shape=[self.action_dim], dtype = tf.float32, initializer=tf.initializers.constant([-2]*self.action_dim) )
 
-    self.sampled_action = tf.random_normal( shape=[self.action_dim], mean=self.action_means_tf, stddev=tf.exp(self.log_std) )
-    #self.sampled_action = tf.clip_by_value(self.sampled_action, self.action_constraint_dn_placeholder, self.action_constraint_up_placeholder)
-  
+    self.sampled_action_th = tf.random_normal( shape=[self.action_dim], mean=self.action_means_tf, stddev=tf.exp(self.log_std) )
+
+    self.A_high_B_low_threshold = (1+build_threshold(price_gap= self.price_gap_A_high_B_low_placeholder, 
+                                                     hold_gap = self.hold_gap_placeholder,
+                                                     delta = self.delta,
+                                                     theta = self.theta,
+                                                     scope = "A_high_B_low") )/2
+
+    self.B_high_A_low_threshold = (1+build_threshold(price_gap= self.price_gap_B_high_A_low_placeholder, 
+                                                     hold_gap = -self.hold_gap_placeholder,
+                                                     delta = self.delta,
+                                                     theta = self.theta,
+                                                     scope = "B_high_A_low") )/2
+
+    self.sampled_action  = self.sampled_action_th*(  tf.cast( tf.less_equal( tf.sign(self.sampled_action_th), 0), tf.float32) * self.A_high_B_low_threshold
+                                                     +tf.cast( tf.greater   ( tf.sign(self.sampled_action_th), 0), tf.float32)* self.B_high_A_low_threshold)
+
+    self.sampled_action = tf.clip_by_value(self.sampled_action, self.action_constraint_dn_placeholder, self.action_constraint_up_placeholder) #* self.action_means_th
+
     mvn = tf.contrib.distributions.MultivariateNormalDiag(self.action_means_tf, tf.exp(self.log_std) )
     self.logprob        =   mvn.log_prob(self.action_placeholder)
     #######################################################
@@ -371,7 +416,7 @@ class PG(object):
         self.baseline = build_rnn(rnn_input=self.observation_placeholder,
                                   n_hidden = self.config.layer_size,
                                   batch_size = self.config.batch_size,
-                                  rnn_length = self.config.max_ep_len,
+                                  rnn_length = self.replaysteps,
                                   output_size = 1,
                                   scope=scope,
                                   output_activation= None)
@@ -421,6 +466,7 @@ class PG(object):
     # initiliaze all variables
     init = tf.global_variables_initializer()
     self.sess.run(init)
+    self.saver = tf.train.Saver()
   
   
   def add_summary(self):
@@ -432,15 +478,25 @@ class PG(object):
     # extra placeholders to log stuff from python
     self.avg_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="avg_reward")
     self.max_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="max_reward")
+    self.norm_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="norm_reward")
     self.std_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="std_reward")
-  
     self.eval_reward_placeholder = tf.placeholder(tf.float32, shape=(), name="eval_reward")
+    self.delta_A_high_B_low_placeholder = tf.placeholder(tf.float32, shape=(), name="delta_A_high_B_low_placeholder")
+    self.delta_B_high_A_low_placeholder = tf.placeholder(tf.float32, shape=(), name="delta_B_high_A_low_placeholder")
+    self.theta_A_high_B_low_placeholder = tf.placeholder(tf.float32, shape=(), name="theta_A_high_B_low_placeholder")
+    self.theta_B_high_A_low_placeholder = tf.placeholder(tf.float32, shape=(), name="theta_B_high_A_low_placeholder")
   
     # extra summaries from python -> placeholders
     tf.summary.scalar("Avg Reward", self.avg_reward_placeholder)
     tf.summary.scalar("Max Reward", self.max_reward_placeholder)
+    tf.summary.scalar("Normalized Reward", self.norm_reward_placeholder)
     tf.summary.scalar("Std Reward", self.std_reward_placeholder)
     tf.summary.scalar("Eval Reward", self.eval_reward_placeholder)
+    #tf.summary.scalar("log std", self.log_std)
+    tf.summary.scalar("delta_A_high_B_low", self.delta_A_high_B_low_placeholder)
+    tf.summary.scalar("delta_B_high_A_low", self.delta_B_high_A_low_placeholder)
+    tf.summary.scalar("theta_A_high_B_low", self.theta_A_high_B_low_placeholder)
+    tf.summary.scalar("theta_B_high_A_low", self.theta_B_high_A_low_placeholder)
             
     # logging
     self.merged = tf.summary.merge_all()
@@ -453,12 +509,17 @@ class PG(object):
     You don't have to change or use anything here.
     """
     self.avg_reward = 0.
+    self.norm_reward = 0.
     self.max_reward = 0.
     self.std_reward = 0.
     self.eval_reward = 0.
+    self.val_delta_A_high_B_low = 0.
+    self.val_delta_B_high_A_low = 0.
+    self.val_theta_A_high_B_low = 0.
+    self.val_theta_B_high_A_low = 0.
   
 
-  def update_averages(self, rewards, scores_eval):
+  def update_averages(self, rewards, max_rewards, scores_eval):
     """
     Update the averages.
 
@@ -470,6 +531,7 @@ class PG(object):
     """
     self.avg_reward = np.mean(rewards)
     self.max_reward = np.max(rewards)
+    self.norm_reward = np.mean( np.array(rewards)/ np.array(max_rewards))
     self.std_reward = np.sqrt(np.var(rewards) / len(rewards))
   
     if len(scores_eval) > 0:
@@ -486,8 +548,13 @@ class PG(object):
     fd = {
       self.avg_reward_placeholder: self.avg_reward, 
       self.max_reward_placeholder: self.max_reward, 
+      self.norm_reward_placeholder: self.norm_reward,
       self.std_reward_placeholder: self.std_reward, 
       self.eval_reward_placeholder: self.eval_reward, 
+      self.delta_A_high_B_low_placeholder: self.val_delta_A_high_B_low,
+      self.delta_B_high_A_low_placeholder: self.val_delta_B_high_A_low,
+      self.theta_A_high_B_low_placeholder: self.val_theta_A_high_B_low,
+      self.theta_B_high_A_low_placeholder: self.val_theta_B_high_A_low,
     }
     summary = self.sess.run(self.merged, feed_dict=fd)
     # tensorboard stuff
@@ -514,16 +581,32 @@ class PG(object):
 
     episode = 0
     episode_rewards = []
+    episode_max_rewards = []
     paths = []
     t = 0
 
     while (num_episodes or t < self.config.batch_size):
 
-      thisdate = (sampling_date + timedelta(minutes=episode*self.config.max_ep_len))
+      #thisdate = (sampling_date + timedelta(minutes=episode*self.config.max_ep_len))
 
-      state, _, _, _ = env.init( self.init_portfolio, thisdate)
-      states, actions, rewards, constraints_up, constraints_dn = [], [], [], [], []
+      state = None
+      
+      if episode ==0:
+        state, _, _, _ = env.init( self.init_portfolio, sampling_date)
+      else:
+        #env.init( self.init_portfolio, None)
+        env.init( env._state_portfolio, None, True)
+
+        state, _, _, _ = env.move_market(t)
+        
+
+      print "episode ", episode, "state", state
+
+      states, states_full, actions, rewards, constraints_up, constraints_dn =[], [], [], [], [], []
+      hold_gaps, price_gap_A_high_B_lows, price_gap_B_high_A_lows = [], [], []
+      
       episode_reward = 0
+      episode_max_reward = 0
 
       for step in range(self.config.max_ep_len):
         
@@ -537,24 +620,20 @@ class PG(object):
         btc_1  = portfolio_array[0,1]
         btc_2  = portfolio_array[1,1]
 
+
+        hold_gap = [ cash_1-cash_2 ] ## hold A - hold B in cash
+
         #buffering at 0.05 bitcoins
         cash_1 = (cash_1>0.05)* cash_1
         cash_2 = (cash_2>0.05)* cash_2
         btc_1 = (btc_1>0.05)* btc_1
         btc_2 = (btc_2>0.05)* btc_2
 
-
-        '''
-        cash_1 = ( state[1][0,:,-1]< state[1][1,:,-1] )* cash_1
-        cash_2 = ( state[1][1,:,-1]< state[1][0,:,-1] )* cash_2
-
-        cash_1_up_constraint = min( [cash_1[0], btc_2,  config.max_quantity_per_transaction*2])/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_1 and BTC_2
-        cash_1_dn_constraint = -min( [cash_2[0], btc_1, config.max_quantity_per_transaction*2])/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_2 and BTC_1
-        '''
+        #cash_1 = ( state[1][0,:,-1]< state[1][1,:,-1]*(1-env._fee_transfer)*(1-env._fee_exchange )**2 )[0]* cash_1
+        #cash_2 = ( state[1][1,:,-1]< state[1][0,:,-1]*(1-env._fee_transfer)*(1-env._fee_exchange )**2 )[0]* cash_2
 
         cash_1_up_constraint = min( [cash_1, btc_2,  config.max_quantity_per_transaction*2])/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_1 and BTC_2
         cash_1_dn_constraint = -min( [cash_2, btc_1, config.max_quantity_per_transaction*2])/2*(1-env._fee_transfer)*(1-env._fee_exchange )  ## minmum of cash_2 and BTC_1
-
 
         btc_1 = (portfolio_array[0,1]>portfolio_array[1,1]+1e-4)*btc_1
         btc_2 = (portfolio_array[1,1]>portfolio_array[0,1]+1e-4)*btc_2
@@ -562,84 +641,103 @@ class PG(object):
         btc_1_up_constraint =  np.min([btc_1/2, config.max_quantity_per_transaction])*(1-env._fee_transfer)  #BTC_1
         btc_1_dn_constraint = -np.min([btc_2/2, config.max_quantity_per_transaction])*(1-env._fee_transfer)  #BTC_2
         
-        '''
-        portfolio_up_constraints = np.array([cash_1_up_constraint, btc_1_up_constraint])
-        portfolio_dn_constraints = np.array([cash_1_dn_constraint, btc_1_dn_constraint])
-        '''
-
         portfolio_up_constraints = [cash_1_up_constraint]
         portfolio_dn_constraints = [cash_1_dn_constraint]
 
 
+        price_gap_A_high_B_low = []
+        price_gap_B_high_A_low = []
+
         for isubarray in range(3):
-          if config.use_only_price_info:
-            if isubarray ==0 or isubarray ==2:
-              pass
-              ### no portfolio info used
-              #state_flatten = np.concatenate( (state_flatten, state[isubarray].flatten()) )
-            else:
-              currency_price = state[isubarray][:,:,-1].flatten()
-              price_difference = []
+          if isubarray ==0:
+            pass
+          elif isubarray ==1:
+            currency_price = state[isubarray][:,:,-1].flatten()
+            price_difference = []
+            price_difference_full = []
+            
+            for iex in range( currency_price.shape[0]):
+              for jex in range( iex+1, currency_price.shape[0]):
+                max_price = max(currency_price[iex], currency_price[jex])
+                fees = max_price*(env._fee_transfer+2*env._fee_exchange)
+                price_difference.append( (currency_price[iex]-currency_price[jex]-fees)/max_price  )
+                price_difference.append( (currency_price[jex]-currency_price[iex]-fees)/max_price )
 
-              for iex in range( currency_price.shape[0]):
-                for jex in range( iex+1, currency_price.shape[0]):
-                  price_difference.append( currency_price[iex]-currency_price[jex])
-              state_flatten = np.array(  price_difference)
+                price_gap_A_high_B_low.append( currency_price[iex]-currency_price[jex]-fees)
+                price_gap_B_high_A_low.append( currency_price[jex]-currency_price[iex]-fees)
 
-          else:
-            if isubarray ==0:
-              pass
-              ### no portfolio info used
-            elif isubarray ==1:
-              currency_price = state[isubarray][:,:,-1].flatten()
-              price_difference = []
+                price_difference_full.append( currency_price[iex]-currency_price[jex] )
+                price_difference_full.append( (currency_price[iex]-currency_price[jex])/ currency_price[iex]  )
 
-              for iex in range( currency_price.shape[0]):
-                for jex in range( iex+1, currency_price.shape[0]):
-                  price_difference.append( currency_price[iex]-currency_price[jex])
-                  price_difference.append( (currency_price[iex]-currency_price[jex])/ currency_price[iex]  )
+                if (currency_price[iex]-currency_price[jex]>fees):
+                  episode_max_reward += currency_price[iex]-currency_price[jex]+1
+                elif (currency_price[jex]-currency_price[iex]>fees):
+                  episode_max_reward += currency_price[jex]-currency_price[iex]+1
+                else:
+                  episode_max_reward += 1
 
-            elif isubarray ==2:
-              currency_in_transfer = state[isubarray]
-              state_flatten = np.concatenate(  (price_difference, currency_in_transfer) ).flatten()
+          elif isubarray ==2:
+            currency_in_transfer = state[isubarray]
+            state_flatten      = np.concatenate(  (price_difference, currency_in_transfer) ).flatten()
+            state_flatten_full = np.concatenate(  (price_difference_full, currency_in_transfer) ).flatten()
 
 
         if step ==0:
           if self.config.network_type == "MLP":
             for r in range(self.replaysteps):
-              states.append(state_flatten)
+              states.append([0.0]*self.observation_dim)
+              states_full.append(np.array([0.0]*(self.observation_dim)))
           if self.config.network_type == "RNN":
             for r in range(self.config.max_ep_len):
-              states.append([0]*self.observation_dim)
+              states.append([0.0]*self.observation_dim)
+              states_full.append(np.array([0.0]*(self.observation_dim)))
 
         else:
           states.append(state_flatten)
+          states_full.append(state_flatten_full)
 
         action_accept = False
         n_failed_sampling = 0
 
         action_means = None
         log_std  = None
+        A_high_B_low_threshold = None
+        B_high_A_low_threshold = None
 
 
         if self.config.network_type == "MLP":
-          action_means = self.sess.run(self.action_means, feed_dict={self.observation_placeholder : np.array([states[-self.replaysteps:]])})
+          action_means = self.sess.run(self.action_means_sig, feed_dict={self.observation_placeholder : np.array([states[-self.replaysteps:]])})
           log_std      = self.sess.run(self.log_std,      feed_dict={self.observation_placeholder : np.array([states[-self.replaysteps:]])})
 
         if self.config.network_type == "RNN":
-          action_means = self.sess.run(self.action_means, feed_dict={self.observation_placeholder : np.array([states[-self.config.max_ep_len:]])})
+          action_means = self.sess.run(self.action_means_sig, feed_dict={self.observation_placeholder : np.array([states[-self.config.max_ep_len:]])})
           log_std      = self.sess.run(self.log_std,      feed_dict={self.observation_placeholder : np.array([states[-self.config.max_ep_len:]])})
+
+        A_high_B_low_threshold = self.sess.run(self.A_high_B_low_threshold, feed_dict={self.price_gap_A_high_B_low_placeholder: [price_gap_A_high_B_low], 
+                                                                                       self.hold_gap_placeholder: [hold_gap]})
+
+        B_high_A_low_threshold = self.sess.run(self.B_high_A_low_threshold, feed_dict={self.price_gap_B_high_A_low_placeholder: [price_gap_B_high_A_low], 
+                                                                                       self.hold_gap_placeholder: [hold_gap]})
+
 
         while not action_accept:
           if self.config.network_type == "MLP":
             action  = self.sess.run(self.sampled_action, feed_dict={self.observation_placeholder : [states[-self.replaysteps:]],
                                                                     self.action_constraint_up_placeholder : [portfolio_up_constraints],
-                                                                    self.action_constraint_dn_placeholder : [portfolio_dn_constraints],})[0]
+                                                                    self.action_constraint_dn_placeholder : [portfolio_dn_constraints],
+                                                                    self.hold_gap_placeholder  : [hold_gap], 
+                                                                    self.price_gap_A_high_B_low_placeholder  : [price_gap_A_high_B_low],
+                                                                    self.price_gap_B_high_A_low_placeholder  : [price_gap_B_high_A_low]})[0]
           if self.config.network_type == "RNN":
             action  = self.sess.run(self.sampled_action, feed_dict={self.observation_placeholder : [states[-self.config.max_ep_len:]],
                                                                     self.action_constraint_up_placeholder : [portfolio_up_constraints],
-                                                                    self.action_constraint_dn_placeholder : [portfolio_dn_constraints],})[0]
+                                                                    self.action_constraint_dn_placeholder : [portfolio_dn_constraints],
+                                                                    self.hold_gap_placeholder  : [hold_gap], 
+                                                                    self.price_gap_A_high_B_low_placeholder  : [price_gap_A_high_B_low],
+                                                                    self.price_gap_B_high_A_low_placeholder  : [price_gap_B_high_A_low]})[0]
 
+          #if self.config.use_discrete_activation:
+          #action = (abs(action)>0.025)*action
 
           ## purchase action has last element constrained to balance other exchange activities
           purchase_action = action[0: self.action_purchase_dim]
@@ -664,23 +762,6 @@ class PG(object):
                   transfer_action[ jex, iex,  iccur] = -purchase_action[iex ]
 
 
-          ''' transfer can happen anytime
-          transfer_flat = action[ self.action_purchase_dim:]
-          transfer_action = np.zeros( (env._n_exchange, env._n_exchange, env._n_currency) )
-          itransfer = -1
-
-          for iccur  in range(env._n_currency ):
-            for iex in range( env._n_exchange ):
-              for jex in range( iex, env._n_exchange ):
-                # transfer matrix diagonal always 0
-                if iex == jex:
-                  continue
-                else:
-                  itransfer +=1
-                  transfer_action[ iex, jex,  iccur] = transfer_flat[itransfer]
-                  transfer_action[ jex, iex,  iccur] = -transfer_flat[itransfer]
-          '''
-
           action_topack = np.concatenate( (purchase_action, transfer_action.flatten())  )
           action_repacked = RepackActionForEnv(env, action_topack)
 
@@ -690,7 +771,7 @@ class PG(object):
             action_accept = True
           except AssertionError:
             n_failed_sampling += 1
-            if n_failed_sampling>100:
+            if n_failed_sampling>200:
               reward = 0
               done = True
               info = None
@@ -703,29 +784,44 @@ class PG(object):
         rewards.append(reward)
         constraints_up.append(portfolio_up_constraints)
         constraints_dn.append(portfolio_dn_constraints)
+        hold_gaps.append(hold_gap)
+        price_gap_A_high_B_lows.append(price_gap_A_high_B_low)
+        price_gap_B_high_A_lows.append(price_gap_B_high_A_low)
 
         episode_reward += reward
         t += 1
         if (done or step == self.config.max_ep_len-1):
           episode_rewards.append(episode_reward)  
+          episode_max_rewards.append(episode_max_reward)
+          print "max reward possible ", episode_max_reward
           break
         if (not num_episodes) and t == self.config.batch_size:
           break
 
-        if step % 50 ==0:
+        if (step+1) % 20 ==0:
           
           print "final portfolio state", state[0].flatten(), "reward", state[0].flatten()[0]+state[0].flatten()[2]
           msg = "Sampling: {:04.2f} ".format(step)
           self.logger.info(msg)
-          msg = "Actioin Means: {:04.9f}".format(action_means[0][0])
+          msg = "Actioin Means: {:04.4f}".format(action_means[0][0])
+          self.logger.info(msg)
+          msg = "Log Std: {:04.4f}".format(log_std[0])
+          self.logger.info(msg)
+          msg = "A_high_B_low_threshold: {:04.2f}  gap: {:04.2f}".format(A_high_B_low_threshold[0][0], price_gap_A_high_B_low[0])
+          self.logger.info(msg)
+          msg = "B_high_A_low_threshold: {:04.2f}  gap: {:04.2f}".format(B_high_A_low_threshold[0][0], price_gap_B_high_A_low[0])
           self.logger.info(msg)
         
       path = {"observation" : np.array(states), 
+              "observation_full" : np.array(states_full), 
               "reward" : np.array(rewards), 
               "action" : np.array(actions),
               "constraint_up" : np.array(constraints_up),
-              "constraint_dn" : np.array(constraints_dn)}
-
+              "constraint_dn" : np.array(constraints_dn),
+              "hold_gaps"     : np.array(hold_gaps),
+              "price_gap_A_high_B_lows" : np.array(price_gap_A_high_B_lows),
+              "price_gap_B_high_A_lows" : np.array(price_gap_B_high_A_lows)
+            }
 
       paths.append(path)
       
@@ -734,7 +830,7 @@ class PG(object):
       if num_episodes and episode >= num_episodes:
         break        
 
-    return paths, episode_rewards
+    return paths, episode_rewards, episode_max_rewards
   
   
   def get_returns(self, paths):
@@ -798,8 +894,8 @@ class PG(object):
 
     if config.normalize_advantage:
       after doing the above, normalize the advantages so that they have a mean of 0
-      and standard deviation of 1.
-  
+      and standard deviation of 1. 
+ 
     """
     adv = returns
 
@@ -863,13 +959,14 @@ class PG(object):
     for t in range(self.config.num_batches*2):
 
       env = self.env
-      if t%2==0:
-        env = self.env
-      else:
-        env = self.env_reverse
+
+      #if t%2==0:
+      #  env = self.env
+      #else:
+      #  env = self.env_reverse
       
       thisdate = (self.start_date + timedelta(minutes=t*self.config.batch_size/2) )
-      paths, total_rewards = self.sample_path(env, thisdate)
+      paths, total_rewards, total_max_rewards = self.sample_path(env, thisdate)
       
       scores_eval = scores_eval + total_rewards
       observations = np.concatenate([path["observation"] for path in paths])
@@ -877,6 +974,10 @@ class PG(object):
       rewards = np.concatenate([path["reward"] for path in paths])
       constraints_up = np.concatenate([path["constraint_up"] for path in paths])
       constraints_dn = np.concatenate([path["constraint_dn"] for path in paths])
+      hold_gaps      = np.concatenate([path["hold_gaps"] for path in paths])
+      price_gap_A_high_B_lows = np.concatenate([path["price_gap_A_high_B_lows"] for path in paths])
+      price_gap_B_high_A_lows = np.concatenate([path["price_gap_B_high_A_lows"] for path in paths])
+
       returns = self.get_returns(paths)
       
       observations_stack = []
@@ -909,14 +1010,22 @@ class PG(object):
         self.action_placeholder : actions,
         self.action_constraint_up_placeholder : constraints_up,
         self.action_constraint_dn_placeholder : constraints_dn,
-        self.advantage_placeholder : advantages})
+        self.advantage_placeholder : advantages,
+        self.hold_gap_placeholder: hold_gaps,
+        self.price_gap_A_high_B_low_placeholder: price_gap_A_high_B_lows,
+        self.price_gap_B_high_A_low_placeholder: price_gap_B_high_A_lows
+      })
 
       loss = self.sess.run(self.loss, feed_dict={
         self.observation_placeholder : observations_stack, 
         self.action_placeholder : actions,
         self.action_constraint_up_placeholder : constraints_up,
         self.action_constraint_dn_placeholder : constraints_dn,
-        self.advantage_placeholder : advantages})
+        self.advantage_placeholder : advantages,
+        self.hold_gap_placeholder: hold_gaps,
+        self.price_gap_A_high_B_low_placeholder: price_gap_A_high_B_lows,
+        self.price_gap_B_high_A_low_placeholder: price_gap_B_high_A_lows,
+      })
 
       baseline_loss = self.sess.run(self.baseline_loss, feed_dict={
         self.observation_placeholder : observations_stack, 
@@ -927,8 +1036,13 @@ class PG(object):
       print "baseline loss", baseline_loss
 
       # tf stuff
+      self.val_delta_A_high_B_low = self.sess.run(self.delta["A_high_B_low"]  )[0]
+      self.val_delta_B_high_A_low = self.sess.run(self.delta["B_high_A_low"]  )[0]
+      self.val_theta_A_high_B_low = self.sess.run(self.theta["A_high_B_low"]  )[0]
+      self.val_theta_B_high_A_low = self.sess.run(self.theta["B_high_A_low"]  )[0]
+
       if (t % self.config.summary_freq == 0):
-        self.update_averages(total_rewards, scores_eval)
+        self.update_averages(total_rewards, total_max_rewards, scores_eval)
         self.record_summary(t)
 
       # compute reward statistics for this batch and log
@@ -948,19 +1062,20 @@ class PG(object):
     export_plot(scores_eval, "Score", config.env_name, self.config.plot_output)
 
 
-  def evaluate(self, env=None, num_episodes=1):
+  def evaluate(self, env=None, start_date = None, num_episodes=1):
     """
     Evaluates the return for num_episodes episodes.
     Not used right now, all evaluation statistics are computed during training 
     episodes.
     """
     if env==None: env = self.env
-    paths, rewards = self.sample_path(env, self.start_date)
+    if start_date==None: start_date = self.start_date
+    paths, rewards, max_rewards = self.sample_path(env, start_date, num_episodes)
     avg_reward = np.mean(rewards)
     sigma_reward = np.sqrt(np.var(rewards) / len(rewards))
     msg = "Average reward: {:04.2f} +/- {:04.2f}".format(avg_reward, sigma_reward)
     self.logger.info(msg)
-    return avg_reward
+    return paths, rewards, avg_reward, max_rewards
      
   
   def record(self):
@@ -969,7 +1084,7 @@ class PG(object):
      """
      #env = gym.make(self.config.env_name)
      #env = gym.wrappers.Monitor(env, self.config.record_path, video_callable=lambda x: True, resume=True)
-     self.evaluate(None, 1)
+     self.evaluate(None, None, 1)
   
   def run(self):
     """
@@ -982,9 +1097,38 @@ class PG(object):
         self.record()
     # model
     self.train()
+
+    # save model
+    self.saver.save(self.sess, self.config.output_path+"model.ckpt")
+
     # record one game at the end
     if self.config.record:
       self.record()
+
+  def performance(self):
+    """
+    Apply procedures of checking performance for a PG.
+    """
+    # initialize
+    self.initialize()
+    self.saver.restore(self.sess, self.config.output_path+"model.ckpt")
+    paths, rewards, avg_reward, max_reward = self.evaluate(env=None, start_date = datetime(2017, 12, 1), num_episodes=100) ### evaluate a month
+
+    ## save to h5 file
+    hf = h5py.File(self.config.output_path+'performance.h5', 'w')
+    for key in paths[0].keys():
+      tmp_array = []
+
+      for p in paths:
+        path = []
+        for t in range(len(p[key])):
+          path.append(p[key][t])
+        tmp_array.append( path )
+      tmp_array = np.array(tmp_array)
+            
+      hf.create_dataset(key, data = tmp_array)
+    hf.close()
+    
           
 if __name__ == '__main__':
 
@@ -1009,4 +1153,5 @@ if __name__ == '__main__':
   
   # train model
   model = PG(env, env_reverse, config)
-  model.run()
+  #model.run()
+  model.performance()
